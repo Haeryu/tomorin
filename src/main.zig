@@ -3,38 +3,48 @@ const tomo = @import("tomo");
 const std = @import("std");
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
     var stream = try tomo.stream.Stream.create();
     defer stream.destroy();
 
-    var in_data = tomo.tensor.GPUTensor(f32, 1){};
-    try in_data.initAsync(.{3}, &stream);
-    defer in_data.deinitAsync(&stream);
+    var cuda_context = try tomo.cuda_context.CudaContext.init();
+    defer cuda_context.deinit();
 
-    var out_data = tomo.tensor.GPUTensor(f32, 1){};
-    try out_data.initAsync(.{3}, &stream);
-    defer out_data.deinitAsync(&stream);
+    const F = f32;
+    var A = try tomorin.function.Square(F, 1).create(allocator);
+    defer A.destroy(allocator, &stream);
+    var B = try tomorin.function.Exp(F, 1).create(allocator);
+    defer B.destroy(allocator, &stream);
+    var C = try tomorin.function.Square(F, 1).create(allocator);
+    defer C.destroy(allocator, &stream);
 
-    var out_host = try tomo.tensor.CPUTensor(f32, 1).init(tomo.allocator.cuda_pinned_allocator, .{3});
-    defer out_host.deinit(tomo.allocator.cuda_pinned_allocator);
+    const V = tomorin.variable.Variable(F, 1);
 
-    var x = tomorin.variable.Variable(f32, 1){
-        .data = &in_data,
-    };
+    var x = try V.create(allocator, .{1}, &stream);
+    defer x.destroy(allocator, &stream);
 
-    var y = tomorin.variable.Variable(f32, 1){
-        .data = &out_data,
-    };
+    try x.data.writeFromHostAsync(&.{0.5}, 0, &stream);
 
-    try stream.sync();
+    const a = try A.forward(V, V, allocator, x, &cuda_context, &stream);
 
-    try in_data.writeFromHostAsync(&.{ 0, 1, 2 }, 0, &stream);
-    var sq = tomorin.function.Square(f32, 1, f32, 1){ .in = &x };
-    var f = sq.function();
-    try f.forward(&x, &stream, &y);
+    const b = try B.forward(V, V, allocator, a, &cuda_context, &stream);
 
-    try out_host.writeFromDevice(y.data.ptr.?, y.data.calcLen(), 0, &stream);
+    var y = try C.forward(V, V, allocator, b, &cuda_context, &stream);
+
+    try y.backward(allocator, &cuda_context, &stream);
 
     try stream.sync();
 
-    std.debug.print("{d}", .{out_host});
+    std.debug.assert(y.creator != null);
+
+    var cpu_tensor = try x.grad.?.data.toHost(allocator, &stream);
+    defer cpu_tensor.deinit(allocator);
+
+    try stream.sync();
+
+    std.debug.print("{d}", .{cpu_tensor});
 }
