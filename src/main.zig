@@ -15,36 +15,37 @@ pub fn main() !void {
     defer cuda_context.deinit();
 
     const F = f32;
-    var A = try tomorin.function.Square(F, 1).create(allocator);
-    defer A.destroy(allocator, &stream);
-    var B = try tomorin.function.Exp(F, 1).create(allocator);
-    defer B.destroy(allocator, &stream);
-    var C = try tomorin.function.Square(F, 1).create(allocator);
-    defer C.destroy(allocator, &stream);
 
     const V = tomorin.variable.Variable(F, 1);
 
+    var add = try tomorin.function.Add(F, 1, 2).create(allocator);
+    defer add.destroy(allocator, &stream);
+
     var x = try V.create(allocator, .{1}, &stream);
     defer x.destroy(allocator, &stream);
+    try x.data.writeFromHostAsync(&.{3.0}, 0, &stream);
 
-    try x.data.writeFromHostAsync(&.{0.5}, 0, &stream);
+    var x2 = try V.create(allocator, .{1}, &stream);
+    defer x2.destroy(allocator, &stream);
+    try x2.data.writeFromHostAsync(&.{3.0}, 0, &stream);
 
-    const a = try A.forward(V, V, allocator, x, &cuda_context, &stream);
+    var xs = .{ x, x2 };
+    const z_erased = try add.forwardErased(allocator, &xs, &cuda_context, &stream);
 
-    const b = try B.forward(V, V, allocator, a, &cuda_context, &stream);
+    const z: *V = @ptrCast(@alignCast(z_erased));
 
-    var y = try C.forward(V, V, allocator, b, &cuda_context, &stream);
-
-    try y.backward(allocator, &cuda_context, &stream);
-
-    try stream.sync();
-
-    std.debug.assert(y.creator != null);
-
-    var cpu_tensor = try x.grad.?.data.toHost(allocator, &stream);
-    defer cpu_tensor.deinit(allocator);
+    try z.backward(allocator, &cuda_context, &stream);
 
     try stream.sync();
 
-    std.debug.print("{d}", .{cpu_tensor});
+    var z_cpu_tensor = try z.data.toHost(allocator, &stream);
+    defer z_cpu_tensor.deinit(allocator);
+
+    var x_grad_cpu_tensor = try x.grad.?.data.toHost(allocator, &stream);
+    defer x_grad_cpu_tensor.deinit(allocator);
+
+    try stream.sync();
+
+    std.debug.print("{d}", .{z_cpu_tensor});
+    std.debug.print("{d}", .{x_grad_cpu_tensor});
 }

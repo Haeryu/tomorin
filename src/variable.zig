@@ -11,6 +11,7 @@ pub fn Variable(comptime T: type, comptime rank: comptime_int) type {
         data: GPUTensor(T, rank),
         grad: ?*Self = null,
         creator: ?*Function = null,
+        generation: usize = 0,
 
         const Self = @This();
         pub const Elemtype = T;
@@ -22,6 +23,19 @@ pub fn Variable(comptime T: type, comptime rank: comptime_int) type {
                 .data = try GPUTensor(T, rank).initAsync(shape, stream),
                 .grad = null,
                 .creator = null,
+                .generation = 0,
+            };
+            return self;
+        }
+
+        pub fn fromTensor(allocator: std.mem.Allocator, data: GPUTensor(T, rank)) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+            self.* = .{
+                .data = data,
+                .grad = null,
+                .creator = null,
+                .generation = 0,
             };
             return self;
         }
@@ -31,6 +45,7 @@ pub fn Variable(comptime T: type, comptime rank: comptime_int) type {
 
             if (self.grad) |grad| {
                 grad.destroy(allocator, stream);
+                self.grad = null;
             }
 
             allocator.destroy(self);
@@ -49,28 +64,10 @@ pub fn Variable(comptime T: type, comptime rank: comptime_int) type {
             return cloned;
         }
 
-        // pub fn backward(
-        //     self: *Self,
-        //     allocator: std.mem.Allocator,
-        //     cuda_context: *const CudaContext,
-        //     stream: *const Stream,
-        // ) !void {
-        //     if (self.creator) |creator| {
-        //         self.grad = self.grad orelse try blk: {
-        //             var ones = try Self.create(allocator, self.data.base.shape, stream);
-        //             errdefer ones.destroy(allocator, stream);
-        //             try ones.data.fill(if (T == BF16) BF16.fromF32(1.0) else 1.0, stream);
-        //             break :blk ones;
-        //         };
-
-        //         _ = try creator.backwardErased(
-        //             allocator,
-        //             self.grad.?,
-        //             cuda_context,
-        //             stream,
-        //         );
-        //     }
-        // }
+        pub fn setCreator(self: *Self, creator: *Function) void {
+            self.creator = creator;
+            self.generation = creator.getGeneration() + 1;
+        }
 
         pub fn backward(
             self: *Self,
@@ -78,24 +75,29 @@ pub fn Variable(comptime T: type, comptime rank: comptime_int) type {
             cuda_context: *const CudaContext,
             stream: *const Stream,
         ) !void {
-            var funcs = std.ArrayList(*Function).init(allocator);
-            defer funcs.deinit();
-
-            if (self.creator) |creator| {
-                try funcs.append(creator);
+            if (self.grad == null) {
+                self.grad = try Self.create(allocator, self.data.base.shape, stream);
+                errdefer {
+                    self.grad.?.destroy(allocator, stream);
+                    self.grad = null;
+                }
+                try self.grad.?.data.fill(if (T == BF16) BF16.fromF32(1.0) else 1.0, stream);
             }
 
-            while (funcs.popOrNull()) |func| {
-                const gy = func.getOutputGradErased() orelse blk: {
-                    try func.setOutputGradOne(allocator, stream);
-                    break :blk func.getOutputGradErased();
-                };
-                _ = try func.backwardErased(allocator, gy.?, cuda_context, stream);
-                const x_creator = func.getInputCreator();
+            var funcs = Function.Queue.init(allocator, {});
+            defer funcs.deinit();
 
-                if (x_creator) |c| {
-                    try funcs.append(c);
-                }
+            var seen_set = std.AutoHashMap(*Function, void).init(allocator);
+            defer seen_set.deinit();
+
+            if (self.creator) |creator| {
+                try funcs.add(creator);
+                try seen_set.put(creator, {});
+            }
+
+            while (funcs.removeOrNull()) |func| {
+                _ = try func.backwardErased(allocator, cuda_context, stream);
+                try func.pushInputsCreator(&funcs, &seen_set);
             }
         }
     };
