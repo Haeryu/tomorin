@@ -53,6 +53,7 @@
         //    .lazy = false,
         //},
         .tomo = .{ .path = "../tomo" },
+        .nina = .{ .path = "../../dsa/nina" },
     },
 
     // Specifies the set of files and directories that are included in this package.

@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const tomo = b.dependency("tomo", .{});
+    const nina = b.dependency("nina", .{});
 
     const lib_mod = b.addModule("tomorin", .{
         .root_source_file = b.path("src/root.zig"),
@@ -38,6 +39,7 @@ pub fn build(b: *std.Build) void {
     // lib_mod.addObjectFile(b.path("zig-out/bin/tomo_kernels.lib"));
 
     lib_mod.addImport("tomo", tomo.module("tomo"));
+    lib_mod.addImport("nina", nina.module("nina"));
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
