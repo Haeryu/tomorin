@@ -16,6 +16,7 @@ const PFunction = @import("function.zig").PFunction;
 const Function = @import("function.zig").Function;
 
 const clone = @import("function1in2out.zig").clone;
+const neg = @import("function1in1out.zig").neg;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -230,7 +231,7 @@ pub fn Sub(comptime T: type) type {
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
-        const Self = Add(T);
+        const Self = Sub(T);
 
         pub fn forward(
             _: *Self,
@@ -239,7 +240,7 @@ pub fn Sub(comptime T: type) type {
             cuda_context: *const CudaContext,
             stream: *const Stream,
         ) !GPUTensor(T) {
-            return try x1.add(x2, cuda_context, stream);
+            return try x1.sub(x2, cuda_context, stream);
         }
 
         pub fn backward(
@@ -249,8 +250,9 @@ pub fn Sub(comptime T: type) type {
             cuda_context: *const CudaContext,
             stream: *const Stream,
         ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
-            // TODO
-            return try clone(T, allocator, gy.move(), cuda_context, stream);
+            var mutgy = gy;
+            var gy1, var gy2 = try clone(T, allocator, mutgy.move(), cuda_context, stream);
+            return .{ gy1.move(), try neg(T, allocator, gy2.move(), cuda_context, stream) };
         }
     };
 }
@@ -262,8 +264,8 @@ pub fn sub(
     x2: PVariable(T),
     cuda_context: *const CudaContext,
     stream: *const Stream,
-) PVariable(T) {
+) !PVariable(T) {
     var mutx1 = x1;
     var mutx2 = x2;
-    return makefunc(Sub(T), allocator, mutx1.move(), mutx2.move(), cuda_context, stream);
+    return try makefunc(Sub(T), allocator, mutx1.move(), mutx2.move(), cuda_context, stream);
 }

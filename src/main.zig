@@ -22,15 +22,26 @@ pub fn main() !void {
     errdefer v2.deinitAsync(&stream);
     try v2.writeFromHostAsync(&.{3.0}, 0, &stream);
 
+    var v3 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 1, 1 }, &stream);
+    errdefer v3.deinitAsync(&stream);
+    try v3.writeFromHostAsync(&.{4.0}, 0, &stream);
+
     var x1 = try tomorin.variable.Variable(f32).create(allocator, v1.move(), &stream);
     defer x1.release(allocator);
     var x2 = try tomorin.variable.Variable(f32).create(allocator, v2.move(), &stream);
     defer x2.release(allocator);
+    var x3 = try tomorin.variable.Variable(f32).create(allocator, v3.move(), &stream);
+    defer x3.release(allocator);
 
-    var y1 = try tomorin.function.add(f32, allocator, x1.clone(), x2.clone(), &cuda_context, &stream);
+    var y1 = try tomorin.function.add(
+        f32,
+        allocator,
+        try tomorin.function.sub(f32, allocator, x1.clone(), x2.clone(), &cuda_context, &stream),
+        x3.clone(),
+        &cuda_context,
+        &stream,
+    );
     defer y1.release(allocator);
-    std.debug.print("{}\n", .{y1.cb_ptr.?.strong_count});
-    std.debug.print("{}\n", .{y1.cb_ptr.?.weak_count});
 
     try y1.get().?.backward(allocator, &cuda_context, &stream);
 
@@ -45,7 +56,11 @@ pub fn main() !void {
     var gx2 = try x2.get().?.grad.?.get().?.data.toHost(allocator, &stream);
     defer gx2.deinit(allocator);
 
+    var gx3 = try x3.get().?.grad.?.get().?.data.toHost(allocator, &stream);
+    defer gx3.deinit(allocator);
+
     std.debug.print("{d}\n", .{res});
     std.debug.print("{d}\n", .{gx1});
     std.debug.print("{d}\n", .{gx2});
+    std.debug.print("{d}\n", .{gx3});
 }

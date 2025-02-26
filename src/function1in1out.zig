@@ -102,13 +102,11 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             var pgy = self.out.?.upgrade().?;
             defer pgy.release(allocator);
 
-            var gx = try self.backward(allocator, &pgy.get().?.grad.?.get().?.data, cuda_context, stream);
+            var gx = try self.backward(allocator, pgy.get().?.grad.?.clone(), cuda_context, stream);
             errdefer gx.deinitAsync(stream);
 
-            var pgx = try Variable(Self.In).create(allocator, gx.move(), stream);
-            errdefer pgx.release(allocator);
             std.debug.assert(self.in.?.get().?.grad == null);
-            self.in.?.get().?.grad = pgx.move();
+            self.in.?.get().?.grad = gx.move();
         }
 
         pub fn addInputsCreators(
@@ -173,19 +171,19 @@ pub fn Neg(comptime T: type) type {
 
         pub fn forward(_: *Self, x: *const GPUTensor(T), cuda_context: *const CudaContext, stream: *const Stream) !GPUTensor(T) {
             var y = try x.cloneAsync(stream);
-            try y.scale(-1.0, cuda_context, stream);
 
-            return y;
+            return try y.scale(-1.0, cuda_context, stream);
         }
 
         pub fn backward(
             _: *Self,
             allocator: std.mem.Allocator,
-            gy: *const GPUTensor(T),
+            gy: PVariable(T),
             cuda_context: *const CudaContext,
             stream: *const Stream,
-        ) !GPUTensor(T) {
-            return try neg(T, allocator, gy.move(), cuda_context, stream);
+        ) !PVariable(T) {
+            var mutgy = gy;
+            return try neg(T, allocator, mutgy.move(), cuda_context, stream);
         }
     };
 }
@@ -197,12 +195,13 @@ fn makefunc(
     cuda_context: *const CudaContext,
     stream: *const Stream,
 ) !PVariable(F.Out) {
-    errdefer x.release(allocator);
+    var mutx = x;
+    errdefer mutx.release(allocator);
 
     var self = try F.create(allocator);
     errdefer self.release(allocator);
 
-    var tagged = [1]PVarTagged{PVarTagged.init(F.In1, x.move())};
+    var tagged = [1]?PVarTagged{PVarTagged.init(F.In, mutx.move())};
 
     var y = (try self.forward(allocator, &tagged, cuda_context, stream))[0].?;
 
