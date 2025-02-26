@@ -8,6 +8,7 @@ const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 
 const PFunction = @import("function.zig").PFunction;
+const Function = @import("function.zig").Function;
 
 pub fn PVariable(comptime T: type) type {
     return Rc(Variable(T), Variable(T).Destructor);
@@ -84,15 +85,14 @@ pub fn Variable(comptime T: type) type {
             var funcs = PFunction.Queue.init(allocator, {});
             defer funcs.deinit();
 
-            var seen_set = std.AutoHashMap(PFunction, void).init(allocator);
+            var seen_set = std.AutoHashMap(*const Function, void).init(allocator);
             defer seen_set.deinit();
 
-            try funcs.add(self.creator.?);
-            try seen_set.put(self.creator.?, {});
+            try funcs.add(self.creator.?.get().?);
+            try seen_set.put(self.creator.?.getConst().?, {});
 
             while (funcs.removeOrNull()) |f| {
-                var mut_f = f;
-                try mut_f.backward(allocator, cuda_context, stream);
+                try f.backward(allocator, cuda_context, stream);
                 try f.addInputsCreators(&funcs, &seen_set);
             }
         }

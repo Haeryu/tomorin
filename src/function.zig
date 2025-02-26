@@ -15,11 +15,11 @@ const PVariableWeak = @import("variable.zig").PVariableWeak;
 const sliceCast = @import("util.zig").sliceCast;
 
 pub const PFunction = struct {
-    pfn: Rc(FunctionErased, FunctionErased.Destructor),
+    pfn: Rc(Function, Function.Destructor),
 
-    pub const Queue = std.PriorityQueue(PFunction, void, struct {
-        fn comp(_: void, a: PFunction, b: PFunction) std.math.Order {
-            return std.math.order(b.pfn.getConst().?.generation, a.pfn.getConst().?.generation);
+    pub const Queue = std.PriorityQueue(*Function, void, struct {
+        fn comp(_: void, a: *Function, b: *Function) std.math.Order {
+            return std.math.order(b.generation, a.generation);
         }
     }.comp);
 
@@ -29,7 +29,7 @@ pub const PFunction = struct {
         pxs_tagged: []?PVarTagged,
         cuda_context: *const CudaContext,
         stream: *const Stream,
-    ) ![FunctionErased.max_args_out]?PVarTagged {
+    ) ![Function.max_args_out]?PVarTagged {
         return try self.pfn.get().?.forward(allocator, self.move(), pxs_tagged, cuda_context, stream);
     }
 
@@ -51,6 +51,14 @@ pub const PFunction = struct {
         return .{ .pfn = mutself.pfn.move() };
     }
 
+    pub fn get(self: *PFunction) ?*Function {
+        return self.pfn.get();
+    }
+
+    pub fn getConst(self: *const PFunction) ?*const Function {
+        return self.pfn.getConst();
+    }
+
     pub fn release(self: *PFunction, allocator: std.mem.Allocator) void {
         self.pfn.release(allocator);
     }
@@ -64,9 +72,7 @@ pub const PFunction = struct {
     }
 };
 
-pub const PFunctionErased = Rc(FunctionErased, FunctionErased.Destructor);
-
-pub const FunctionErased = struct {
+pub const Function = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
@@ -94,16 +100,16 @@ pub const FunctionErased = struct {
         add_inputs_creators: *const fn (
             ctx: *anyopaque,
             queue: *PFunction.Queue,
-            seen_set: *std.AutoHashMap(PFunction, void),
+            seen_set: *std.AutoHashMap(*const Function, void),
         ) anyerror!void,
     };
 
-    pub fn destroy(self: *FunctionErased, allocator: std.mem.Allocator) void {
+    pub fn destroy(self: *Function, allocator: std.mem.Allocator) void {
         self.vtable.destroy(self.ptr, allocator);
     }
 
     pub fn forward(
-        self: *FunctionErased,
+        self: *Function,
         allocator: std.mem.Allocator,
         pcreator: PFunction,
         pxs_tagged: []?PVarTagged,
@@ -123,7 +129,7 @@ pub const FunctionErased = struct {
     }
 
     pub fn backward(
-        self: *FunctionErased,
+        self: *Function,
         allocator: std.mem.Allocator,
         cuda_context: *const CudaContext,
         stream: *const Stream,
@@ -131,10 +137,10 @@ pub const FunctionErased = struct {
         try self.vtable.backward(self.ptr, allocator, cuda_context, stream);
     }
 
-    fn addInputsCreators(
-        self: *const FunctionErased,
+    pub fn addInputsCreators(
+        self: *const Function,
         queue: *PFunction.Queue,
-        seen_set: *std.AutoHashMap(PFunction, void),
+        seen_set: *std.AutoHashMap(*const Function, void),
     ) !void {
         try self.vtable.add_inputs_creators(self.ptr, queue, seen_set);
     }
@@ -142,7 +148,7 @@ pub const FunctionErased = struct {
     pub const Destructor = struct {
         allocator: std.mem.Allocator,
 
-        pub fn destroy(self: *Destructor, function: *FunctionErased) void {
+        pub fn destroy(self: *Destructor, function: *Function) void {
             function.destroy(self.allocator);
         }
     };
@@ -159,7 +165,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
                 .out = null,
             };
 
-            const function: FunctionErased = .{
+            const function: Function = .{
                 .ptr = self,
                 .vtable = &.{
                     .forward = &forwardDecorated,
@@ -170,7 +176,11 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
                 .generation = 0,
             };
 
-            var pfn = try PFunctionErased.create(allocator, function, .{ .allocator = allocator });
+            var pfn = try Rc(Function, Function.Destructor).create(
+                allocator,
+                function,
+                .{ .allocator = allocator },
+            );
             defer pfn.release(allocator);
 
             return .{
@@ -198,7 +208,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             pxs_tagged: []?PVarTagged,
             cuda_context: *const CudaContext,
             stream: *const Stream,
-        ) ![FunctionErased.max_args_out]?PVarTagged {
+        ) ![Function.max_args_out]?PVarTagged {
             const self: *Self = @ptrCast(@alignCast(ctx));
             self.in = pxs_tagged[0].?.untagMove(Self.Elem);
 
@@ -212,7 +222,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
 
             self.out = py.downgrade();
 
-            return .{PVarTagged.init(Self.Elem, py.move())} ++ .{null} ** (FunctionErased.max_args_out - 1);
+            return .{PVarTagged.init(Self.Elem, py.move())} ++ .{null} ** (Function.max_args_out - 1);
         }
 
         pub fn backwardDecorated(
@@ -234,21 +244,22 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             self.in.?.get().?.grad = pgx.move();
         }
 
-        pub fn getInputs(ctx: *anyopaque) [FunctionErased.max_args_in]?PVarTagged {
+        pub fn getInputs(ctx: *anyopaque) [Function.max_args_in]?PVarTagged {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            return .{self.in} ++ .{null} ** (FunctionErased.max_args_in - 1);
+            return .{self.in} ++ .{null} ** (Function.max_args_in - 1);
         }
 
         pub fn addInputsCreators(
             ctx: *anyopaque,
             queue: *PFunction.Queue,
-            seen_set: *std.AutoHashMap(PFunction, void),
+            seen_set: *std.AutoHashMap(*const Function, void),
         ) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             if (self.in.?.getConst().?.creator) |creator| {
-                if (!seen_set.contains(creator)) {
-                    try queue.add(creator);
-                    try seen_set.put(creator, {});
+                if (!seen_set.contains(creator.getConst().?)) {
+                    var mut_creator = creator;
+                    try queue.add(mut_creator.get().?);
+                    try seen_set.put(creator.getConst().?, {});
                 }
             }
         }
