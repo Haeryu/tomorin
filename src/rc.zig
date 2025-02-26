@@ -60,20 +60,33 @@ pub fn Rc(comptime T: type, comptime Destructor: type) type {
             }
         }
 
+        pub fn move(self: *Self) Self {
+            const new = self.*;
+            self.cb_ptr = null;
+            return new;
+        }
+
         pub fn get(self: *Self) ?*T {
-            if (!self.cb_ptr) return null;
-            if (self.cb_ptr.strong_count == 0) {
-                return null;
+            if (self.cb_ptr) |cb_ptr| {
+                if (cb_ptr.strong_count == 0) {
+                    return null;
+                }
+                return &cb_ptr.data;
             }
-            return &self.cb_ptr.data;
+
+            return null;
         }
 
         pub fn getConst(self: *const Self) ?*const T {
-            if (!self.cb_ptr) return null;
-            if (self.cb_ptr.strong_count == 0) {
-                return null;
+            if (self.cb_ptr) |cb_ptr| {
+                if (cb_ptr.strong_count == 0) {
+                    return null;
+                }
+
+                return &cb_ptr.data;
             }
-            return &self.cb_ptr.data;
+
+            return null;
         }
 
         pub fn downgrade(self: *Self) Weak(T) {
