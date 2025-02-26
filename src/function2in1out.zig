@@ -205,7 +205,13 @@ pub fn Add(comptime T: type) type {
             cuda_context: *const CudaContext,
             stream: *const Stream,
         ) !GPUTensor(T) {
-            return try x1.add(x2, cuda_context, stream);
+            if (x1.ptr == x2.ptr) {
+                var new_x2 = try x2.cloneAsync(stream);
+                defer new_x2.deinitAsync(stream);
+                return try x1.add(&new_x2, cuda_context, stream);
+            } else {
+                return try x1.add(x2, cuda_context, stream);
+            }
         }
 
         pub fn backward(
@@ -255,7 +261,13 @@ pub fn Sub(comptime T: type) type {
             cuda_context: *const CudaContext,
             stream: *const Stream,
         ) !GPUTensor(T) {
-            return try x1.sub(x2, cuda_context, stream);
+            if (x1.ptr == x2.ptr) {
+                var new_x2 = try x2.cloneAsync(stream);
+                defer new_x2.deinitAsync(stream);
+                return try x1.sub(&new_x2, cuda_context, stream);
+            } else {
+                return try x1.sub(x2, cuda_context, stream);
+            }
         }
 
         pub fn backward(

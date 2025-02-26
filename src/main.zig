@@ -43,7 +43,7 @@ pub fn main() !void {
                 f32,
                 allocator,
                 x1.clone(),
-                x2.clone(),
+                x1.clone(),
                 &cuda_context,
                 &stream,
             ),
@@ -66,14 +66,14 @@ pub fn main() !void {
     var gx1 = try x1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
     defer gx1.deinit(allocator);
 
-    var gx2 = try x2.get().?.grad.?.get().?.data.toHost(allocator, &stream);
-    defer gx2.deinit(allocator);
+    // var gx2 = try x2.get().?.grad.?.get().?.data.toHost(allocator, &stream);
+    // defer gx2.deinit(allocator);
 
-    var gx3 = try x1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
-    defer gx3.deinit(allocator);
+    // var gx3 = try x1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
+    // defer gx3.deinit(allocator);
 
     std.debug.print("{d}\n", .{res});
     std.debug.print("{d}\n", .{gx1});
-    std.debug.print("{d}\n", .{gx2});
-    std.debug.print("{d}\n", .{gx3});
+    // std.debug.print("{d}\n", .{gx2});
+    // std.debug.print("{d}\n", .{gx3});
 }

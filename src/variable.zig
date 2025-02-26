@@ -97,6 +97,13 @@ pub fn Variable(comptime T: type) type {
                 try f.addInputsCreators(&funcs, &seen_set);
             }
         }
+
+        pub fn cleargrad(self: *Self, allocator: std.mem.Allocator) void {
+            if (self.grad) |*grad| {
+                grad.release(allocator);
+                self.grad = null;
+            }
+        }
     };
 }
 
