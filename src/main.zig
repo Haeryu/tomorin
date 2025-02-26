@@ -25,21 +25,27 @@ pub fn main() !void {
     defer data2.deinitAsync(&stream);
 
     var exp = try tomorin.function.Exp(f32).create(allocator);
-    defer exp.release(allocator);
+    //defer exp.release(allocator);
 
-    var tagged = [1]?tomorin.variable.PVarTagged{v1.move()};
+    var exp2 = try tomorin.function.Exp(f32).create(allocator);
+    //defer exp2.release(allocator);
 
-    const v2s = try exp.forward(allocator, &tagged, &cuda_context, &stream);
-    var v2 = v2s[0].?;
-    defer v2.release(allocator);
+    var tagged = [1]?tomorin.variable.PVarTagged{v1.clone()};
 
-    var v2_untagged = v2.untagMove(f32);
-    defer v2_untagged.release(allocator);
+    var v2s = try exp.forward(allocator, &tagged, &cuda_context, &stream);
 
-    var v2_cpu = try v2_untagged.get().?.data.toHost(allocator, &stream);
-    defer v2_cpu.deinit(allocator);
+    const v3s = try exp2.forward(allocator, &v2s, &cuda_context, &stream);
+    var v3 = v3s[0].?;
+    defer v3.release(allocator);
+
+    var v3_untagged = v3.untag(f32);
+
+    try v3_untagged.get().?.backward(allocator, &cuda_context, &stream);
+
+    var v3_cpu = try v1.untag(f32).getConst().?.grad.?.getConst().?.data.toHost(allocator, &stream);
+    defer v3_cpu.deinit(allocator);
 
     try stream.sync();
 
-    std.debug.print("{any}", .{v2_cpu});
+    std.debug.print("{any}", .{v3_cpu});
 }

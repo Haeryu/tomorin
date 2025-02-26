@@ -3,6 +3,7 @@ const tomo = @import("tomo");
 const GPUTensor = tomo.tensor.GPUTensor;
 const BF16 = tomo.BF16;
 const Stream = tomo.stream.Stream;
+const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 
@@ -21,6 +22,7 @@ pub fn Variable(comptime T: type) type {
         data: GPUTensor(T),
         grad: ?PVariable(T),
         creator: ?PFunction,
+        generation: usize,
 
         const Self = @This();
 
@@ -47,6 +49,7 @@ pub fn Variable(comptime T: type) type {
                 .data = data,
                 .grad = null,
                 .creator = null,
+                .generation = 0,
             }, .{
                 .allocator = allocator,
                 .stream = stream,
@@ -63,11 +66,36 @@ pub fn Variable(comptime T: type) type {
             return PVarTagged.init(T, pvar.move());
         }
 
-        // pub fn backward(self: *Self) void {
-        //     // if (self.creator) |creator| {
-        //     //     // x = creator.
-        //     // }
-        // }
+        pub fn setCreator(self: *Self, creator: PFunction) void {
+            self.generation = creator.pfn.getConst().?.generation + 1;
+            self.creator = creator.move();
+        }
+
+        pub fn backward(self: *Self, allocator: std.mem.Allocator, cuda_context: *const CudaContext, stream: *const Stream) !void {
+            if (self.grad == null) {
+                var ones = try GPUTensor(T).initAsync(self.data.base.getShape(), stream);
+                errdefer ones.deinitAsync(stream);
+
+                try ones.fill(1.0, stream);
+
+                self.grad = try Self.create(allocator, ones, stream);
+            }
+
+            var funcs = PFunction.Queue.init(allocator, {});
+            defer funcs.deinit();
+
+            var seen_set = std.AutoHashMap(PFunction, void).init(allocator);
+            defer seen_set.deinit();
+
+            try funcs.add(self.creator.?);
+            try seen_set.put(self.creator.?, {});
+
+            while (funcs.removeOrNull()) |f| {
+                var mut_f = f;
+                try mut_f.backward(allocator, cuda_context, stream);
+                try f.addInputsCreators(&funcs, &seen_set);
+            }
+        }
     };
 }
 
@@ -107,6 +135,16 @@ pub const PVarTagged = union(enum) {
         };
     }
 
+    pub fn untag(self: *PVarTagged, comptime T: type) PVariable(T) {
+        return switch (T) {
+            BF16 => self.bf16,
+            f16 => self.f16,
+            f32 => self.f32,
+            f64 => self.f64,
+            else => unreachable,
+        };
+    }
+
     pub fn move(self: *PVarTagged) PVarTagged {
         return switch (self.*) {
             inline else => |*p, tag| @unionInit(PVarTagged, @tagName(tag), p.move()),
@@ -123,5 +161,11 @@ pub const PVarTagged = union(enum) {
         switch (self.*) {
             inline else => |*p| p.release(allocator),
         }
+    }
+
+    pub fn getGeneration(self: *const PVarTagged) usize {
+        return switch (self.*) {
+            inline else => |p| p.getConst().?.generation,
+        };
     }
 };
