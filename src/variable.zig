@@ -6,6 +6,7 @@ const Stream = tomo.stream.Stream;
 const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
+const Context = @import("context.zig").Context;
 
 const PFunction = @import("function.zig").PFunction;
 const Function = @import("function.zig").Function;
@@ -24,45 +25,55 @@ pub fn Variable(comptime T: type) type {
         grad: ?PVariable(T),
         creator: ?PFunction,
         generation: usize,
+        name: ?[]u8,
+        context: *const Context,
 
         const Self = @This();
 
         pub const Destructor = struct {
-            stream: *const Stream,
-            allocator: std.mem.Allocator,
-
-            pub fn destroy(self: *Destructor, variable: *Variable(T)) void {
-                variable.data.deinitAsync(self.stream);
+            pub fn destroy(_: *Destructor, variable: *Variable(T)) void {
+                variable.data.deinitAsync(variable.context.stream);
                 if (variable.grad) |*grad| {
-                    grad.release(self.allocator);
+                    grad.release(variable.context.variable_allocator);
                     variable.grad = null;
                 }
 
                 if (variable.creator) |*creator| {
-                    creator.release(self.allocator);
+                    creator.release(variable.context.variable_allocator);
                     variable.creator = null;
                 }
             }
         };
 
-        pub fn create(allocator: std.mem.Allocator, data: GPUTensor(T), stream: *const Stream) !PVariable(T) {
-            var pvar = try PVariable(T).create(allocator, .{
+        pub fn create(
+            data: GPUTensor(T),
+            name: ?[]u8,
+            context: *const Context,
+        ) !PVariable(T) {
+            var pvar = try PVariable(T).create(context.variable_allocator, .{
                 .data = data,
                 .grad = null,
                 .creator = null,
                 .generation = 0,
-            }, .{
-                .allocator = allocator,
-                .stream = stream,
-            });
-            defer pvar.release(allocator);
+                .name = name,
+                .context = context,
+            }, .{});
+            defer pvar.release(context.variable_allocator);
 
             return pvar.move();
         }
 
-        pub fn createTagged(allocator: std.mem.Allocator, data: GPUTensor(T), stream: *const Stream) !PVarTagged {
-            var pvar = try Self.create(allocator, data, stream);
-            defer pvar.release(allocator);
+        pub fn createTagged(
+            data: GPUTensor(T),
+            name: ?[]u8,
+            context: *const Context,
+        ) !PVarTagged {
+            var pvar = try Self.create(
+                data,
+                name,
+                context,
+            );
+            defer pvar.release(context.variable_allocator);
 
             return PVarTagged.init(T, pvar.move());
         }
@@ -73,34 +84,38 @@ pub fn Variable(comptime T: type) type {
             self.creator = creator.move();
         }
 
-        pub fn backward(self: *Self, allocator: std.mem.Allocator, cuda_context: *const CudaContext, stream: *const Stream) !void {
+        pub fn backward(self: *Self) !void {
             if (self.grad == null) {
-                var ones = try GPUTensor(T).initAsync(self.data.base.getShape(), stream);
-                errdefer ones.deinitAsync(stream);
+                var ones = try GPUTensor(T).initAsync(self.data.base.getShape(), self.context.stream);
+                defer ones.deinitAsync(self.context.stream);
 
-                try ones.fill(1.0, stream);
+                try ones.fill(1.0, self.context.stream);
 
-                self.grad = try Self.create(allocator, ones, stream);
+                self.grad = try Self.create(
+                    ones.move(),
+                    null,
+                    self.context,
+                );
             }
 
-            var funcs = PFunction.Queue.init(allocator, {});
+            var funcs = PFunction.Queue.init(self.context.multi_purpose_allocator, {});
             defer funcs.deinit();
 
-            var seen_set = std.AutoHashMap(*const Function, void).init(allocator);
+            var seen_set = std.AutoHashMap(*const Function, void).init(self.context.multi_purpose_allocator);
             defer seen_set.deinit();
 
             try funcs.add(self.creator.?.get().?);
             try seen_set.put(self.creator.?.getConst().?, {});
 
             while (funcs.removeOrNull()) |f| {
-                try f.backward(allocator, cuda_context, stream);
+                try f.backward();
                 try f.addInputsCreators(&funcs, &seen_set);
             }
         }
 
-        pub fn cleargrad(self: *Self, allocator: std.mem.Allocator) void {
+        pub fn cleargrad(self: *Self) void {
             if (self.grad) |*grad| {
-                grad.release(allocator);
+                grad.release(self.context.variable_allocator);
                 self.grad = null;
             }
         }

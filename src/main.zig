@@ -14,6 +14,15 @@ pub fn main() !void {
     var cuda_context = try tomo.cuda_context.CudaContext.init();
     defer cuda_context.deinit();
 
+    const context: tomorin.context.Context = .{
+        .cuda_context = &cuda_context,
+        .stream = &stream,
+        .enable_backprop_graph = true,
+        .function_allocator = allocator,
+        .multi_purpose_allocator = allocator,
+        .variable_allocator = allocator,
+    };
+
     var v1 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);
     errdefer v1.deinitAsync(&stream);
     try v1.fill(2.0, &stream);
@@ -26,39 +35,33 @@ pub fn main() !void {
     errdefer v3.deinitAsync(&stream);
     try v3.fill(4.0, &stream);
 
-    var x1 = try tomorin.variable.Variable(f32).create(allocator, v1.move(), &stream);
-    defer x1.release(allocator);
-    var x2 = try tomorin.variable.Variable(f32).create(allocator, v2.move(), &stream);
-    defer x2.release(allocator);
-    // var x3 = try tomorin.variable.Variable(f32).create(allocator, v3.move(), &stream);
-    // defer x3.release(allocator);
+    var x1 = try tomorin.variable.Variable(f32).create(v1.move(), null, &context);
+    defer x1.release(context.variable_allocator);
+    var x2 = try tomorin.variable.Variable(f32).create(v2.move(), null, &context);
+    defer x2.release(context.variable_allocator);
+    var x3 = try tomorin.variable.Variable(f32).create(v3.move(), null, &context);
+    defer x3.release(context.variable_allocator);
 
     var y1 = try tomorin.function.neg(
         f32,
-        allocator,
         try tomorin.function.mul(
             f32,
-            allocator,
             try tomorin.function.sub(
                 f32,
-                allocator,
                 x1.clone(),
-                x1.clone(),
-                &cuda_context,
-                &stream,
+                x2.clone(),
+                &context,
             ),
-            x1.clone(),
-            &cuda_context,
-            &stream,
+            x3.clone(),
+            &context,
         ),
-        &cuda_context,
-        &stream,
+        &context,
     );
-    defer y1.release(allocator);
+    defer y1.release(context.variable_allocator);
 
-    try y1.get().?.backward(allocator, &cuda_context, &stream);
+    try y1.get().?.backward();
 
-    try stream.sync();
+    try context.stream.sync();
 
     var res = try y1.get().?.data.toHost(allocator, &stream);
     defer res.deinit(allocator);
@@ -72,8 +75,12 @@ pub fn main() !void {
     // var gx3 = try x1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
     // defer gx3.deinit(allocator);
 
+    var gy = try y1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
+    defer gy.deinit(allocator);
+
     std.debug.print("{d}\n", .{res});
     std.debug.print("{d}\n", .{gx1});
     // std.debug.print("{d}\n", .{gx2});
     // std.debug.print("{d}\n", .{gx3});
+    std.debug.print("{d}\n", .{gy});
 }

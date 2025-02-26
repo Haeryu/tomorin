@@ -6,6 +6,7 @@ const Stream = tomo.stream.Stream;
 const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
+const Context = @import("context.zig").Context;
 
 const PVariable = @import("variable.zig").PVariable;
 const PVarTagged = @import("variable.zig").PVarTagged;
@@ -25,22 +26,16 @@ pub const PFunction = struct {
 
     pub fn forward(
         self: PFunction,
-        allocator: std.mem.Allocator,
-        pxs_tagged: []?PVarTagged,
-        cuda_context: *const CudaContext,
-        stream: *const Stream,
+        pxs_tagged: []PVarTagged,
     ) ![Function.max_args_out]?PVarTagged {
         var mutpfn = self.pfn;
-        return try mutpfn.get().?.forward(allocator, self.move(), pxs_tagged, cuda_context, stream);
+        return try mutpfn.get().?.forward(self.move(), pxs_tagged);
     }
 
     pub fn backward(
         self: *PFunction,
-        allocator: std.mem.Allocator,
-        cuda_context: *const CudaContext,
-        stream: *const Stream,
     ) !void {
-        try self.pfn.get().?.backward(allocator, cuda_context, stream);
+        try self.pfn.get().?.backward();
     }
 
     pub fn clone(self: PFunction) PFunction {
@@ -81,21 +76,15 @@ pub const Function = struct {
     pub const max_args_out: comptime_int = 2;
 
     const VTable = struct {
-        destroy: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) void,
+        destroy: *const fn (ctx: *anyopaque) void,
         forward: *const fn (
             ctx: *anyopaque,
-            allocator: std.mem.Allocator,
             pcreator: PFunction,
-            pxs_tagged: []?PVarTagged,
-            cuda_context: *const CudaContext,
-            stream: *const Stream,
+            pxs_tagged: []PVarTagged,
         ) anyerror![max_args_out]?PVarTagged,
 
         backward: *const fn (
             ctx: *anyopaque,
-            allocator: std.mem.Allocator,
-            cuda_context: *const CudaContext,
-            stream: *const Stream,
         ) anyerror!void,
 
         add_inputs_creators: *const fn (
@@ -105,37 +94,27 @@ pub const Function = struct {
         ) anyerror!void,
     };
 
-    pub fn destroy(self: *Function, allocator: std.mem.Allocator) void {
-        self.vtable.destroy(self.ptr, allocator);
+    pub fn destroy(self: *Function) void {
+        self.vtable.destroy(self.ptr);
     }
 
     pub fn forward(
         self: *Function,
-        allocator: std.mem.Allocator,
         pcreator: PFunction,
-        pxs_tagged: []?PVarTagged,
-        cuda_context: *const CudaContext,
-        stream: *const Stream,
+        pxs_tagged: []PVarTagged,
     ) ![max_args_out]?PVarTagged {
         for (pxs_tagged) |px_tagged| {
-            if (px_tagged) |px_tagged_nonnull| {
-                if (px_tagged_nonnull.getGeneration() > self.generation) {
-                    self.generation = px_tagged_nonnull.getGeneration();
-                }
-            } else {
-                break;
+            if (px_tagged.getGeneration() > self.generation) {
+                self.generation = px_tagged.getGeneration();
             }
         }
-        return try self.vtable.forward(self.ptr, allocator, pcreator, pxs_tagged, cuda_context, stream);
+        return try self.vtable.forward(self.ptr, pcreator, pxs_tagged);
     }
 
     pub fn backward(
         self: *Function,
-        allocator: std.mem.Allocator,
-        cuda_context: *const CudaContext,
-        stream: *const Stream,
     ) !void {
-        try self.vtable.backward(self.ptr, allocator, cuda_context, stream);
+        try self.vtable.backward(self.ptr);
     }
 
     pub fn addInputsCreators(
@@ -147,10 +126,8 @@ pub const Function = struct {
     }
 
     pub const Destructor = struct {
-        allocator: std.mem.Allocator,
-
-        pub fn destroy(self: *Destructor, function: *Function) void {
-            function.destroy(self.allocator);
+        pub fn destroy(_: *Destructor, function: *Function) void {
+            function.destroy();
         }
     };
 };
