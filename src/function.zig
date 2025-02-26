@@ -24,13 +24,14 @@ pub const PFunction = struct {
     }.comp);
 
     pub fn forward(
-        self: *PFunction,
+        self: PFunction,
         allocator: std.mem.Allocator,
         pxs_tagged: []?PVarTagged,
         cuda_context: *const CudaContext,
         stream: *const Stream,
     ) ![Function.max_args_out]?PVarTagged {
-        return try self.pfn.get().?.forward(allocator, self.move(), pxs_tagged, cuda_context, stream);
+        var mutpfn = self.pfn;
+        return try mutpfn.get().?.forward(allocator, self.move(), pxs_tagged, cuda_context, stream);
     }
 
     pub fn backward(
@@ -77,7 +78,7 @@ pub const Function = struct {
     vtable: *const VTable,
 
     generation: usize,
-    const max_args_out: comptime_int = 2;
+    pub const max_args_out: comptime_int = 2;
 
     const VTable = struct {
         destroy: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) void,
@@ -154,145 +155,6 @@ pub const Function = struct {
     };
 };
 
-pub fn FuncDecorator1in1out(comptime Self: type) type {
-    return struct {
-        pub fn create(allocator: std.mem.Allocator) !PFunction {
-            const self = try allocator.create(Self);
-            errdefer allocator.destroy(self);
-
-            self.* = .{
-                .in = null,
-                .out = null,
-            };
-
-            const function: Function = .{
-                .ptr = self,
-                .vtable = &.{
-                    .forward = &forwardDecorated,
-                    .backward = &backwardDecorated,
-                    .destroy = &destroy,
-                    .add_inputs_creators = &addInputsCreators,
-                },
-                .generation = 0,
-            };
-
-            var pfn = try Rc(Function, Function.Destructor).create(
-                allocator,
-                function,
-                .{ .allocator = allocator },
-            );
-            defer pfn.release(allocator);
-
-            return .{
-                .pfn = pfn.move(),
-            };
-        }
-
-        pub fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            if (self.in) |*in| {
-                in.release(allocator);
-            }
-            self.in = null;
-            if (self.out) |*out| {
-                out.release(allocator);
-            }
-            self.out = null;
-            allocator.destroy(self);
-        }
-
-        pub fn forwardDecorated(
-            ctx: *anyopaque,
-            allocator: std.mem.Allocator,
-            pcreator: PFunction,
-            pxs_tagged: []?PVarTagged,
-            cuda_context: *const CudaContext,
-            stream: *const Stream,
-        ) ![Function.max_args_out]?PVarTagged {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            self.in = pxs_tagged[0].?.untagMove(Self.Elem);
-
-            var y = try self.forward(&self.in.?.get().?.data, cuda_context, stream);
-            errdefer y.deinitAsync(stream);
-
-            var py = try Variable(Self.Elem).create(allocator, y, stream);
-            errdefer py.release(allocator);
-
-            py.get().?.setCreator(pcreator.move());
-
-            self.out = py.downgrade();
-
-            return .{PVarTagged.init(Self.Elem, py.move())} ++ .{null} ** (Function.max_args_out - 1);
-        }
-
-        pub fn backwardDecorated(
-            ctx: *anyopaque,
-            allocator: std.mem.Allocator,
-            cuda_context: *const CudaContext,
-            stream: *const Stream,
-        ) !void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            var pgy = self.out.?.upgrade().?;
-            defer pgy.release(allocator);
-
-            var gx = try self.backward(&pgy.get().?.grad.?.get().?.data, cuda_context, stream);
-            errdefer gx.deinitAsync(stream);
-
-            var pgx = try Variable(Self.Elem).create(allocator, gx.move(), stream);
-            errdefer pgx.release(allocator);
-            std.debug.assert(self.in.?.get().?.grad == null);
-            self.in.?.get().?.grad = pgx.move();
-        }
-
-        pub fn getInputs(ctx: *anyopaque) [Function.max_args_in]?PVarTagged {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            return .{self.in} ++ .{null} ** (Function.max_args_in - 1);
-        }
-
-        pub fn addInputsCreators(
-            ctx: *anyopaque,
-            queue: *PFunction.Queue,
-            seen_set: *std.AutoHashMap(*const Function, void),
-        ) !void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            if (self.in.?.getConst().?.creator) |creator| {
-                if (!seen_set.contains(creator.getConst().?)) {
-                    var mut_creator = creator;
-                    try queue.add(mut_creator.get().?);
-                    try seen_set.put(creator.getConst().?, {});
-                }
-            }
-        }
-    };
-}
-
-pub fn Exp(comptime T: type) type {
-    return struct {
-        in: ?PVariable(T) = null,
-        out: ?PVariableWeak(T) = null,
-        const Elem = T;
-
-        pub usingnamespace FuncDecorator1in1out(Exp(T));
-
-        const Self = Exp(T);
-
-        pub fn forward(_: *Self, x: *const GPUTensor(T), _: *const CudaContext, stream: *const Stream) !GPUTensor(T) {
-            var y = try x.cloneAsync(stream);
-            errdefer y.deinitAsync(stream);
-
-            try y.exp(stream);
-
-            return y;
-        }
-
-        pub fn backward(self: *Self, gy: *const GPUTensor(T), _: *const CudaContext, stream: *const Stream) !GPUTensor(T) {
-            var gx = try self.in.?.get().?.data.cloneAsync(stream);
-            errdefer gx.deinitAsync(stream);
-
-            try gx.exp(stream);
-            try gx.product(gy, stream);
-
-            return gx;
-        }
-    };
-}
+pub usingnamespace @import("function1in1out.zig");
+pub usingnamespace @import("function1in2out.zig");
+pub usingnamespace @import("function2in1out.zig");

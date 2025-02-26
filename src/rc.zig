@@ -123,10 +123,17 @@ pub fn Weak(comptime T: type, comptime Destructor: type) type {
                 std.debug.assert(cb.weak_count > 0);
                 cb.weak_count -= 1;
                 if (cb.strong_count == 0 and cb.weak_count == 0) {
+                    // cb.destroy();
                     allocator.destroy(cb);
                 }
                 self.cb_ptr = null;
             }
+        }
+
+        pub fn move(self: *Self) Self {
+            const new = self.*;
+            self.cb_ptr = null;
+            return new;
         }
     };
 }

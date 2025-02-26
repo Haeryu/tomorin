@@ -57,17 +57,18 @@ pub fn Variable(comptime T: type) type {
             });
             defer pvar.release(allocator);
 
-            return pvar.clone();
+            return pvar.move();
         }
 
         pub fn createTagged(allocator: std.mem.Allocator, data: GPUTensor(T), stream: *const Stream) !PVarTagged {
             var pvar = try Self.create(allocator, data, stream);
-            errdefer pvar.release(allocator);
+            defer pvar.release(allocator);
 
             return PVarTagged.init(T, pvar.move());
         }
 
         pub fn setCreator(self: *Self, creator: PFunction) void {
+            std.debug.assert(self.creator == null);
             self.generation = creator.pfn.getConst().?.generation + 1;
             self.creator = creator.move();
         }
