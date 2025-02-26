@@ -15,6 +15,8 @@ const PVariableWeak = @import("variable.zig").PVariableWeak;
 const PFunction = @import("function.zig").PFunction;
 const Function = @import("function.zig").Function;
 
+const add = @import("function2in1out.zig").add;
+
 pub fn FuncDecorator1in1out(comptime Self: type) type {
     return struct {
         pub fn create(allocator: std.mem.Allocator) !PFunction {
@@ -57,12 +59,11 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             }
             if (self.out) |out| {
                 var outmut = out;
-                if (outmut.upgrade()) |strong| {
-                    var strongmut = strong;
-                    strongmut.release(allocator);
-                } else {
-                    outmut.release(allocator);
-                }
+                // if (outmut.upgrade()) |strong| {
+                //     var strongmut = strong;
+                //     strongmut.release(allocator);
+                // }
+                outmut.release(allocator);
                 self.out = null;
             }
             allocator.destroy(self);
@@ -103,10 +104,17 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             defer pgy.release(allocator);
 
             var gx = try self.backward(allocator, pgy.get().?.grad.?.clone(), cuda_context, stream);
-            errdefer gx.deinitAsync(stream);
+            errdefer gx.release(allocator);
 
-            std.debug.assert(self.in.?.get().?.grad == null);
-            self.in.?.get().?.grad = gx.move();
+            if (self.in.?.get().?.grad) |*grad| {
+                //var mutgrad = grad;
+                var new_grad = try add(Self.In, allocator, grad.move(), gx.move(), cuda_context, stream);
+                defer new_grad.release(allocator);
+
+                self.in.?.get().?.grad = new_grad.move();
+            } else {
+                self.in.?.get().?.grad = gx.move();
+            }
         }
 
         pub fn addInputsCreators(

@@ -156,5 +156,5 @@ pub const Function = struct {
 };
 
 pub usingnamespace @import("function1in1out.zig");
-pub usingnamespace @import("function1in2out.zig");
+// pub usingnamespace @import("function1in2out.zig");
 pub usingnamespace @import("function2in1out.zig");

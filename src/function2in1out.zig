@@ -15,7 +15,7 @@ const PVariableWeak = @import("variable.zig").PVariableWeak;
 const PFunction = @import("function.zig").PFunction;
 const Function = @import("function.zig").Function;
 
-const clone = @import("function1in2out.zig").clone;
+// const clone = @import("function1in2out.zig").clone;
 const neg = @import("function1in1out.zig").neg;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
@@ -65,12 +65,11 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             }
             if (self.out) |out| {
                 var outmut = out;
-                if (outmut.upgrade()) |strong| {
-                    var strongmut = strong;
-                    strongmut.release(allocator);
-                } else {
-                    outmut.release(allocator);
-                }
+                // if (outmut.upgrade()) |strong| {
+                //     var strongmut = strong;
+                //     strongmut.release(allocator);
+                // }
+                outmut.release(allocator);
                 self.out = null;
             }
 
@@ -113,13 +112,28 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             defer pgy.release(allocator);
 
             var gx1, var gx2 = try self.backward(allocator, pgy.get().?.grad.?.clone(), cuda_context, stream);
-            errdefer gx1.deinitAsync(stream);
-            errdefer gx2.deinitAsync(stream);
+            errdefer gx1.release(allocator);
+            errdefer gx2.release(allocator);
 
-            std.debug.assert(self.in1.?.get().?.grad == null);
-            std.debug.assert(self.in2.?.get().?.grad == null);
-            self.in1.?.get().?.grad = gx1.move();
-            self.in2.?.get().?.grad = gx2.move();
+            if (self.in1.?.get().?.grad) |*grad1| {
+                //var mutgrad = grad;
+                var new_grad = try add(Self.In1, allocator, grad1.move(), gx1.move(), cuda_context, stream);
+                defer new_grad.release(allocator);
+
+                self.in1.?.get().?.grad = new_grad.move();
+            } else {
+                self.in1.?.get().?.grad = gx1.move();
+            }
+
+            if (self.in2.?.get().?.grad) |*grad2| {
+                //var mutgrad = grad;
+                var new_grad = try add(Self.In2, allocator, grad2.move(), gx2.move(), cuda_context, stream);
+                defer new_grad.release(allocator);
+
+                self.in2.?.get().?.grad = new_grad.move();
+            } else {
+                self.in2.?.get().?.grad = gx2.move();
+            }
         }
 
         pub fn addInputsCreators(
@@ -196,13 +210,14 @@ pub fn Add(comptime T: type) type {
 
         pub fn backward(
             _: *Self,
-            allocator: std.mem.Allocator,
+            _: std.mem.Allocator,
             gy: PVariable(T),
-            cuda_context: *const CudaContext,
-            stream: *const Stream,
+            _: *const CudaContext,
+            _: *const Stream,
         ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
             var gymut = gy;
-            return try clone(T, allocator, gymut.move(), cuda_context, stream);
+            //return try clone(T, allocator, gymut.move(), cuda_context, stream);
+            return .{ gymut.clone(), gymut.move() };
         }
     };
 }
@@ -251,7 +266,11 @@ pub fn Sub(comptime T: type) type {
             stream: *const Stream,
         ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
             var mutgy = gy;
-            var gy1, var gy2 = try clone(T, allocator, mutgy.move(), cuda_context, stream);
+            var gy1 = mutgy.clone();
+            defer gy1.release(allocator);
+            var gy2 = mutgy.move();
+            defer gy2.release(allocator);
+
             return .{ gy1.move(), try neg(T, allocator, gy2.move(), cuda_context, stream) };
         }
     };
@@ -268,4 +287,80 @@ pub fn sub(
     var mutx1 = x1;
     var mutx2 = x2;
     return try makefunc(Sub(T), allocator, mutx1.move(), mutx2.move(), cuda_context, stream);
+}
+
+pub fn Mul(comptime T: type) type {
+    return struct {
+        in1: ?PVariable(T) = null,
+        in2: ?PVariable(T) = null,
+        out: ?PVariableWeak(T) = null,
+        const In1 = T;
+        const In2 = T;
+        const Out = T;
+
+        pub usingnamespace FuncDecorator2in1out(Self);
+
+        const Self = Mul(T);
+
+        pub fn forward(
+            _: *Self,
+            x1: *const GPUTensor(T),
+            x2: *const GPUTensor(T),
+            _: *const CudaContext,
+            stream: *const Stream,
+        ) !GPUTensor(T) {
+            var y = try x1.cloneAsync(stream);
+            errdefer y.deinitAsync(stream);
+            try y.product(x2, stream);
+
+            return y.move();
+        }
+
+        pub fn backward(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            gy: PVariable(T),
+            cuda_context: *const CudaContext,
+            stream: *const Stream,
+        ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
+            var x1 = try self.in1.?.getConst().?.data.cloneAsync(stream);
+            errdefer x1.deinitAsync(stream);
+
+            var x2 = try self.in2.?.getConst().?.data.cloneAsync(stream);
+            errdefer x2.deinitAsync(stream);
+
+            var v1 = try Variable(Self.In1).create(allocator, x1.move(), stream);
+            defer v1.release(allocator);
+
+            var v2 = try Variable(Self.In2).create(allocator, x2.move(), stream);
+            defer v2.release(allocator);
+
+            var mutgy = gy;
+            var gy1 = mutgy.clone();
+            defer gy1.release(allocator);
+            var gy2 = mutgy.move();
+            defer gy2.release(allocator);
+
+            var gx1 = try mul(T, allocator, gy1.move(), v2.move(), cuda_context, stream);
+            defer gx1.release(allocator);
+
+            var gx2 = try mul(T, allocator, gy2.move(), v1.move(), cuda_context, stream);
+            defer gx2.release(allocator);
+
+            return .{ gx1.move(), gx2.move() };
+        }
+    };
+}
+
+pub fn mul(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    x1: PVariable(T),
+    x2: PVariable(T),
+    cuda_context: *const CudaContext,
+    stream: *const Stream,
+) !PVariable(T) {
+    var mutx1 = x1;
+    var mutx2 = x2;
+    return try makefunc(Mul(T), allocator, mutx1.move(), mutx2.move(), cuda_context, stream);
 }
