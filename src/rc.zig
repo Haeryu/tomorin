@@ -89,7 +89,7 @@ pub fn Rc(comptime T: type, comptime Destructor: type) type {
             return null;
         }
 
-        pub fn downgrade(self: *Self) Weak(T) {
+        pub fn downgrade(self: *Self) Weak(T, Destructor) {
             if (self.cb_ptr) |cb| {
                 cb.weak_count += 1;
                 return .{ .cb_ptr = cb };

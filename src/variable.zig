@@ -6,6 +6,8 @@ const Stream = tomo.stream.Stream;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 
+const PFunction = @import("function.zig").PFunction;
+
 pub fn PVariable(comptime T: type) type {
     return Rc(Variable(T), Variable(T).Destructor);
 }
@@ -18,6 +20,7 @@ pub fn Variable(comptime T: type) type {
     return struct {
         data: GPUTensor(T),
         grad: ?PVariable(T),
+        creator: ?PFunction,
 
         const Self = @This();
 
@@ -31,6 +34,11 @@ pub fn Variable(comptime T: type) type {
                     grad.release(self.allocator);
                     variable.grad = null;
                 }
+
+                if (variable.creator) |*creator| {
+                    creator.release(self.allocator);
+                    variable.creator = null;
+                }
             }
         };
 
@@ -38,6 +46,7 @@ pub fn Variable(comptime T: type) type {
             var pvar = try PVariable(T).create(allocator, .{
                 .data = data,
                 .grad = null,
+                .creator = null,
             }, .{
                 .allocator = allocator,
                 .stream = stream,
@@ -53,6 +62,12 @@ pub fn Variable(comptime T: type) type {
 
             return PVarTagged.init(T, pvar.move());
         }
+
+        // pub fn backward(self: *Self) void {
+        //     // if (self.creator) |creator| {
+        //     //     // x = creator.
+        //     // }
+        // }
     };
 }
 

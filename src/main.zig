@@ -29,7 +29,7 @@ pub fn main() !void {
 
     var tagged = [1]?tomorin.variable.PVarTagged{v1.move()};
 
-    const v2s = try exp.get().?.forward(allocator, &tagged, &cuda_context, &stream);
+    const v2s = try exp.forward(allocator, &tagged, &cuda_context, &stream);
     var v2 = v2s[0].?;
     defer v2.release(allocator);
 
@@ -41,5 +41,5 @@ pub fn main() !void {
 
     try stream.sync();
 
-    std.debug.print("{any}", .{v2_untagged});
+    std.debug.print("{any}", .{v2_cpu});
 }
