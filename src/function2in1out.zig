@@ -9,7 +9,7 @@ const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
 
 const PVariable = @import("variable.zig").PVariable;
-const PVarTagged = @import("variable.zig").PVarTagged;
+const PVarTagged = @import("variable.zig").PTaggedVar;
 const Variable = @import("variable.zig").Variable;
 const PVariableWeak = @import("variable.zig").PVariableWeak;
 
@@ -57,6 +57,7 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+
             if (self.in1) |*in1| {
                 in1.release(self.context.variable_allocator);
                 self.in1 = null;
@@ -67,10 +68,6 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             }
             if (self.out) |out| {
                 var outmut = out;
-                // if (outmut.upgrade()) |strong| {
-                //     var strongmut = strong;
-                //     strongmut.release(allocator);
-                // }
                 outmut.release(self.context.variable_allocator);
                 self.out = null;
             }
@@ -153,15 +150,15 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             if (self.in1.?.getConst().?.creator) |creator1| {
                 if (!seen_set.contains(creator1.getConst().?)) {
-                    var mut_creator = creator1;
-                    try queue.add(mut_creator.get().?);
+                    var mut_creator1 = creator1;
+                    try queue.add(mut_creator1.get().?);
                     try seen_set.put(creator1.getConst().?, {});
                 }
             }
             if (self.in2.?.getConst().?.creator) |creator2| {
                 if (!seen_set.contains(creator2.getConst().?)) {
-                    var mut_creator = creator2;
-                    try queue.add(mut_creator.get().?);
+                    var mut_creator2 = creator2;
+                    try queue.add(mut_creator2.get().?);
                     try seen_set.put(creator2.getConst().?, {});
                 }
             }
@@ -177,9 +174,6 @@ fn makefunc(
 ) !PVariable(F.Out) {
     var mutx1 = x1;
     var mutx2 = x2;
-
-    defer mutx1.release(context.variable_allocator);
-    defer mutx2.release(context.variable_allocator);
 
     var self = try F.create(context);
     errdefer self.release(context.function_allocator);
@@ -222,11 +216,10 @@ pub fn Add(comptime T: type) type {
         }
 
         pub fn backward(
-            self: *Self,
+            _: *Self,
             gy: PVariable(T),
         ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
             var gymut = gy;
-            defer gymut.release(self.context.variable_allocator);
             return .{ gymut.clone(), gymut.move() };
         }
     };
@@ -240,8 +233,6 @@ pub fn add(
 ) !PVariable(T) {
     var mutx1 = x1;
     var mutx2 = x2;
-    defer mutx1.release(context.variable_allocator);
-    defer mutx2.release(context.variable_allocator);
     return try makefunc(Add(T), mutx1.move(), mutx2.move(), context);
 }
 
@@ -278,7 +269,7 @@ pub fn Sub(comptime T: type) type {
             gy: PVariable(T),
         ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
             var mutgy = gy;
-            defer mutgy.release(self.context.variable_allocator);
+
             var gy1 = mutgy.clone();
             defer gy1.release(self.context.variable_allocator);
             var gy2 = mutgy.move();
@@ -297,8 +288,6 @@ pub fn sub(
 ) !PVariable(T) {
     var mutx1 = x1;
     var mutx2 = x2;
-    defer mutx1.release(context.variable_allocator);
-    defer mutx2.release(context.variable_allocator);
     return try makefunc(Sub(T), mutx1.move(), mutx2.move(), context);
 }
 
@@ -353,14 +342,13 @@ pub fn Mul(comptime T: type) type {
             defer v2.release(self.context.variable_allocator);
 
             var mutgy = gy;
-            defer mutgy.release(self.context.variable_allocator);
 
             var gy1 = mutgy.clone();
             defer gy1.release(self.context.variable_allocator);
             var gy2 = mutgy.move();
             defer gy2.release(self.context.variable_allocator);
 
-            var gx1 = try mul(T, gy1.move(), v2.move(), self.context);
+            var gx1 = try mul(T, gy1.clone(), v2.move(), self.context);
             defer gx1.release(self.context.variable_allocator);
 
             var gx2 = try mul(T, gy2.move(), v1.move(), self.context);
@@ -379,7 +367,5 @@ pub fn mul(
 ) !PVariable(T) {
     var mutx1 = x1;
     var mutx2 = x2;
-    defer mutx1.release(context.variable_allocator);
-    defer mutx2.release(context.variable_allocator);
     return try makefunc(Mul(T), mutx1.move(), mutx2.move(), context);
 }

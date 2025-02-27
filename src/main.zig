@@ -2,6 +2,8 @@ const std = @import("std");
 const tomo = @import("tomo");
 const tomorin = @import("tomorin");
 
+// TODO: graphviz first, bugfix next
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -14,73 +16,25 @@ pub fn main() !void {
     var cuda_context = try tomo.cuda_context.CudaContext.init();
     defer cuda_context.deinit();
 
-    const context: tomorin.context.Context = .{
-        .cuda_context = &cuda_context,
-        .stream = &stream,
-        .enable_backprop_graph = true,
-        .function_allocator = allocator,
-        .multi_purpose_allocator = allocator,
-        .variable_allocator = allocator,
-    };
+    var context = tomorin.context.Context.init(allocator, &cuda_context, &stream, true);
+    defer context.deinit();
+
+    try context.makeNewLevel();
 
     var v1 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);
     errdefer v1.deinitAsync(&stream);
     try v1.fill(2.0, &stream);
 
-    var v2 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);
-    errdefer v2.deinitAsync(&stream);
-    try v2.fill(3.0, &stream);
+    const x1 = tomorin.variable.Variable(f32){
+        .data = v1,
+        .level = 0,
+        .context = &context,
+    };
 
-    var v3 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);
-    errdefer v3.deinitAsync(&stream);
-    try v3.fill(4.0, &stream);
+    const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, &x1)));
 
-    var x1 = try tomorin.variable.Variable(f32).create(v1.move(), null, &context);
-    defer x1.release(context.variable_allocator);
-    var x2 = try tomorin.variable.Variable(f32).create(v2.move(), null, &context);
-    defer x2.release(context.variable_allocator);
-    var x3 = try tomorin.variable.Variable(f32).create(v3.move(), null, &context);
-    defer x3.release(context.variable_allocator);
+    var v_host = try y.data.toHost(allocator, &stream);
+    defer v_host.deinit(allocator);
 
-    var y1 = try tomorin.function.neg(
-        f32,
-        try tomorin.function.mul(
-            f32,
-            try tomorin.function.sub(
-                f32,
-                x1.clone(),
-                x2.clone(),
-                &context,
-            ),
-            x3.clone(),
-            &context,
-        ),
-        &context,
-    );
-    defer y1.release(context.variable_allocator);
-
-    try y1.get().?.backward();
-
-    try context.stream.sync();
-
-    var res = try y1.get().?.data.toHost(allocator, &stream);
-    defer res.deinit(allocator);
-
-    var gx1 = try x1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
-    defer gx1.deinit(allocator);
-
-    // var gx2 = try x2.get().?.grad.?.get().?.data.toHost(allocator, &stream);
-    // defer gx2.deinit(allocator);
-
-    // var gx3 = try x1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
-    // defer gx3.deinit(allocator);
-
-    var gy = try y1.get().?.grad.?.get().?.data.toHost(allocator, &stream);
-    defer gy.deinit(allocator);
-
-    std.debug.print("{d}\n", .{res});
-    std.debug.print("{d}\n", .{gx1});
-    // std.debug.print("{d}\n", .{gx2});
-    // std.debug.print("{d}\n", .{gx3});
-    std.debug.print("{d}\n", .{gy});
+    std.debug.print("{d}", .{v_host});
 }
