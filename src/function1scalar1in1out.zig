@@ -16,6 +16,7 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 
+const FuncDecorator1in1outBase = @import("function1in1out.zig").FuncDecorator1in1outBase;
 const add = @import("function2in1out.zig").add;
 const mul = @import("function2in1out.zig").mul;
 
@@ -42,7 +43,6 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
                 .scalar = scalar,
                 .base = .{
                     .self_key = self_key,
-                    .context = context,
                 },
             };
 
@@ -51,13 +51,14 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
 
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.self_key.context;
             if (Self.owns_in) {
-                self.base.context.releaseVariable(self.in.?);
+                context.releaseVariable(self.in.?);
             }
             if (Self.owns_out) {
-                self.base.context.releaseVariable(self.out.?);
+                context.releaseVariable(self.out.?);
             }
-            self.base.context.allocator.destroy(self);
+            context.allocator.destroy(self);
         }
 
         pub fn getGeneration(ctx: *anyopaque) usize {
@@ -67,31 +68,32 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
 
         pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey) ![]const VarKey {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.self_key.context;
             self.in = args[0];
 
-            const in = self.base.context.acquireVariable(args[0]).asUntaggedConst(Self.In);
+            const in = context.acquireVariable(args[0]).asUntaggedConst(Self.In);
             defer {
                 if (!Self.owns_in) {
-                    self.base.context.releaseVariable(self.in.?);
+                    context.releaseVariable(self.in.?);
                 }
             }
 
             var y = try self.forward(&in.data);
-            errdefer y.deinitAsync(self.base.context.stream);
+            errdefer y.deinitAsync(context.stream);
 
-            const var_y = try self.base.context.createVariable(Self.Out, y, null);
-            defer self.base.context.releaseVariable(var_y);
+            const var_y = try context.createVariable(Self.Out, y, null);
+            defer context.releaseVariable(var_y);
             self.out = var_y;
 
             self.base.generation = in.generation;
-            self.base.context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
+            context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
                 self.base.self_key,
                 self.base.generation,
             );
 
             defer {
                 if (!Self.owns_out) {
-                    self.base.context.releaseVariable(self.out.?);
+                    context.releaseVariable(self.out.?);
                 }
             }
 
@@ -100,15 +102,16 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.self_key.context;
 
-            const out = self.base.context.refVariable(self.out.?).asUntaggedConst(Self.Out);
+            const out = context.refVariable(self.out.?).asUntaggedConst(Self.Out);
 
             const gx = try self.backward(out.grad.?);
 
-            const in = self.base.context.refVariable(self.in.?).asUntagged(Self.In);
+            const in = context.refVariable(self.in.?).asUntagged(Self.In);
 
             if (in.grad) |in_grad| {
-                in.grad = try add(Self.Out, in_grad, gx, self.base.context);
+                in.grad = try add(Self.Out, in_grad, gx);
             } else {
                 in.grad = gx;
             }
@@ -116,11 +119,11 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
 
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-
-            const in = self.base.context.refVariable(self.in.?).asUntagged(Self.In);
+            const context = self.base.self_key.context;
+            const in = context.refVariable(self.in.?).asUntagged(Self.In);
 
             if (in.creator) |creator| {
-                const in_creator = self.base.context.refFunction(creator);
+                const in_creator = context.refFunction(creator);
                 if (!seen_set.contains(in_creator)) {
                     try seen_set.put(in_creator, {});
                     try queue.add(in_creator);
@@ -130,15 +133,47 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     };
 }
 
-fn makefunc(
-    comptime F: type,
-    x: VarKey,
-    scalar: F.Scalar,
-    context: *Context,
-) !VarKey {
-    const funckey = try F.create(context, scalar);
+fn makefunc(comptime F: type, x: VarKey, scalar: F.Scalar) !VarKey {
+    const funckey = try F.create(x.context, scalar);
 
-    return (try context.refFunction(funckey).forward(&.{x}))[0];
+    return (try x.context.refFunction(funckey).forward(&.{x}))[0];
+}
+
+pub fn Shift(comptime T: type) type {
+    return struct {
+        in: ?VarKey,
+        out: ?VarKey,
+        scalar: T,
+        base: FunctionBase,
+
+        const Scalar = T;
+        const In = T;
+        const Out = T;
+
+        const owns_in = false;
+        const owns_out = false;
+
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
+
+        const Self = Shift(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.self_key.context;
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.shift(self.scalar, context.stream);
+            return y;
+        }
+
+        pub fn backward(_: *Self, gy: VarKey) !VarKey {
+            return gy;
+        }
+    };
+}
+
+pub fn shift(comptime T: type, x: VarKey, scalar: T) !VarKey {
+    return try makefunc(Shift(T), x, scalar);
 }
 
 pub fn Scale(comptime T: type) type {
@@ -160,22 +195,18 @@ pub fn Scale(comptime T: type) type {
         const Self = Scale(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            return try x.scale(self.scalar, self.base.context.cuda_context, self.base.context.stream);
+            const context = self.base.self_key.context;
+            return try x.scale(self.scalar, context.cuda_context, context.stream);
         }
 
         pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            return try scale(T, gy, self.scalar, self.base.context);
+            return try scale(T, gy, self.scalar);
         }
     };
 }
 
-pub fn scale(
-    comptime T: type,
-    x: VarKey,
-    scalar: T,
-    context: *Context,
-) !VarKey {
-    return try makefunc(Scale(T), x, scalar, context);
+pub fn scale(comptime T: type, x: VarKey, scalar: T) !VarKey {
+    return try makefunc(Scale(T), x, scalar);
 }
 
 pub fn Powf(comptime T: type) type {
@@ -197,26 +228,22 @@ pub fn Powf(comptime T: type) type {
         const Self = Powf(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            var y = try x.cloneAsync(self.base.context.stream);
-            errdefer y.deinitAsync(self.base.context.stream);
-            return try y.powf(self.scalar, self.base.context.cuda_context, self.base.context.stream);
+            const context = self.base.self_key.context;
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+            return try y.powf(self.scalar, context.cuda_context, context.stream);
         }
 
         pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            const x_cmin1 = try powf(T, gy, self.scalar - 1.0, self.base.context);
-            const c_x_cmin1 = try scale(T, x_cmin1, self.scalar, self.base.context);
-            return try mul(T, c_x_cmin1, gy, self.base.context);
+            const x_cmin1 = try powf(T, gy, self.scalar - 1.0);
+            const c_x_cmin1 = try scale(T, x_cmin1, self.scalar);
+            return try mul(T, c_x_cmin1, gy);
         }
     };
 }
 
-pub fn powf(
-    comptime T: type,
-    x: VarKey,
-    scalar: T,
-    context: *Context,
-) !VarKey {
-    return try makefunc(Powf(T), x, scalar, context);
+pub fn powf(comptime T: type, x: VarKey, scalar: T) !VarKey {
+    return try makefunc(Powf(T), x, scalar);
 }
 
 pub fn Pow(comptime T: type) type {
@@ -238,25 +265,21 @@ pub fn Pow(comptime T: type) type {
         const Self = Pow(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            var y = try x.cloneAsync(self.base.context.stream);
-            errdefer y.deinitAsync(self.base.context.stream);
-            try y.pow(self.scalar, self.base.context.stream);
+            const context = self.base.self_key.context;
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+            try y.pow(self.scalar, context.stream);
             return y;
         }
 
         pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            const x_cmin1 = try pow(T, gy, self.scalar, self.base.context);
-            const c_x_cmin1 = try scale(T, x_cmin1, @floatFromInt(self.scalar), self.base.context);
-            return try mul(T, c_x_cmin1, gy, self.base.context);
+            const x_cmin1 = try pow(T, gy, self.scalar);
+            const c_x_cmin1 = try scale(T, x_cmin1, @floatFromInt(self.scalar));
+            return try mul(T, c_x_cmin1, gy);
         }
     };
 }
 
-pub fn pow(
-    comptime T: type,
-    x: VarKey,
-    scalar: i32,
-    context: *Context,
-) !VarKey {
-    return try makefunc(Pow(T), x, scalar, context);
+pub fn pow(comptime T: type, x: VarKey, scalar: i32) !VarKey {
+    return try makefunc(Pow(T), x, scalar);
 }

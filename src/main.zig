@@ -6,6 +6,11 @@ const sub = tomorin.function.sub;
 const neg = tomorin.function.neg;
 const mul = tomorin.function.mul;
 const div = tomorin.function.div;
+const scale = tomorin.function.scale;
+const pow = tomorin.function.pow;
+const shift = tomorin.function.shift;
+const scaleShift = tomorin.function.scaleShift;
+const square = tomorin.function.square;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -24,60 +29,24 @@ pub fn main() !void {
 
     var v1 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);
     errdefer v1.deinitAsync(&stream);
-    try v1.fill(2.0, &stream);
-
-    var v2 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);
-    errdefer v2.deinitAsync(&stream);
-    try v2.fill(4.0, &stream);
-
-    var v3 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);
-    errdefer v3.deinitAsync(&stream);
-    try v3.fill(7.0, &stream);
+    try v1.fill(1.0, &stream);
 
     const x1 = try context.createVariable(f32, v1, "x1");
     defer context.releaseVariable(x1);
 
-    const x2 = try context.createVariable(f32, v2, "x2");
-    defer context.releaseVariable(x2);
+    const y = try shift(f32, x1, 3.0);
+    const y_sq = try square(f32, y);
 
-    const x3 = try context.createVariable(f32, v3, "x3");
-    defer context.releaseVariable(x3);
-
-    // const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, x1, &context), &context), &context);
-    //const y = try tomorin.function.neg(f32, x1, &context);
-    const y = try div(f32, try add(f32, try div(f32, x1, try neg(f32, x1, &context), &context), x2, &context), x3, &context);
-    const y_acq = context.acquireVariable(y);
-    defer context.releaseVariable(y);
-
-    try context.backward(f32, y, &.{ x1, x2, x3 });
+    try context.backward(f32, y_sq, &.{x1});
 
     try stream.sync();
 
-    var v_host = try y_acq.asUntagged(f32).data.toHost(allocator, &stream);
-    defer v_host.deinit(allocator);
+    var host_y_sq = try context.refVariable(y_sq).asUntagged(f32).data.toHost(allocator, context.stream);
+    defer host_y_sq.deinit(allocator);
 
-    const px1 = context.refVariable(x1).asUntagged(f32);
-    var gx1 = context.refVariable(px1.grad.?).asUntagged(f32);
-    var gx1_host = try gx1.data.toHost(allocator, &stream);
-    defer gx1_host.deinit(allocator);
+    var gx = try context.refVariable(x1).refGrad().?.asUntaggedConst(f32).data.toHost(allocator, context.stream);
+    defer gx.deinit(allocator);
 
-    const px2 = context.refVariable(x2).asUntagged(f32);
-    var gx2 = context.refVariable(px2.grad.?).asUntagged(f32);
-    var gx2_host = try gx2.data.toHost(allocator, &stream);
-    defer gx2_host.deinit(allocator);
-
-    const px3 = context.refVariable(x3).asUntagged(f32);
-    var gx3 = context.refVariable(px3.grad.?).asUntagged(f32);
-    var gx3_host = try gx3.data.toHost(allocator, &stream);
-    defer gx3_host.deinit(allocator);
-
-    std.debug.print("{d}", .{v_host});
-    std.debug.print("{d}", .{gx1_host});
-    std.debug.print("{d}", .{gx2_host});
-    std.debug.print("{d}", .{gx3_host});
-
-    std.debug.print("{any}\n", .{x1});
-    std.debug.print("{any}\n", .{px1.grad.?});
-    std.debug.print("{any}\n", .{px2.grad.?});
-    std.debug.print("{any}\n", .{px3.grad.?});
+    std.debug.print("{d}", .{host_y_sq});
+    std.debug.print("{d}", .{gx});
 }

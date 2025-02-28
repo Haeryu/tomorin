@@ -18,6 +18,7 @@ const FunctionBase = @import("function.zig").FunctionBase;
 
 const neg = @import("function1in1out.zig").neg;
 const pow = @import("function1scalar1in1out.zig").pow;
+const square = @import("function1in1out.zig").square;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -42,7 +43,6 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                 .out = null,
                 .base = .{
                     .self_key = self_key,
-                    .context = context,
                 },
             };
 
@@ -51,16 +51,17 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.self_key.context;
             if (Self.owns_in1) {
-                self.base.context.releaseVariable(self.in1.?);
+                context.releaseVariable(self.in1.?);
             }
             if (Self.owns_in2) {
-                self.base.context.releaseVariable(self.in2.?);
+                context.releaseVariable(self.in2.?);
             }
             if (Self.owns_out) {
-                self.base.context.releaseVariable(self.out.?);
+                context.releaseVariable(self.out.?);
             }
-            self.base.context.allocator.destroy(self);
+            context.allocator.destroy(self);
         }
 
         pub fn getGeneration(ctx: *anyopaque) usize {
@@ -70,39 +71,41 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
         pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey) ![]const VarKey {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.self_key.context;
+
             self.in1 = args[0];
             self.in2 = args[1];
 
-            const in1 = self.base.context.acquireVariable(args[0]).asUntaggedConst(Self.In1);
+            const in1 = context.acquireVariable(args[0]).asUntaggedConst(Self.In1);
             defer {
                 if (!Self.owns_in1) {
-                    self.base.context.releaseVariable(self.in1.?);
+                    context.releaseVariable(self.in1.?);
                 }
             }
 
-            const in2 = self.base.context.acquireVariable(args[1]).asUntaggedConst(Self.In2);
+            const in2 = context.acquireVariable(args[1]).asUntaggedConst(Self.In2);
             defer {
                 if (!Self.owns_in2) {
-                    self.base.context.releaseVariable(self.in2.?);
+                    context.releaseVariable(self.in2.?);
                 }
             }
 
             var y = try self.forward(&in1.data, &in2.data);
-            errdefer y.deinitAsync(self.base.context.stream);
+            errdefer y.deinitAsync(context.stream);
 
-            const var_y = try self.base.context.createVariable(Self.Out, y, null);
-            defer self.base.context.releaseVariable(var_y);
+            const var_y = try context.createVariable(Self.Out, y, null);
+            defer context.releaseVariable(var_y);
             self.out = var_y;
 
             self.base.generation = @max(in1.generation, in2.generation);
-            self.base.context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
+            context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
                 self.base.self_key,
                 self.base.generation,
             );
 
             defer {
                 if (!Self.owns_out) {
-                    self.base.context.releaseVariable(self.out.?);
+                    context.releaseVariable(self.out.?);
                 }
             }
 
@@ -111,21 +114,22 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.self_key.context;
 
-            const out = self.base.context.refVariable(self.out.?).asUntaggedConst(Self.Out);
+            const out = context.refVariable(self.out.?).asUntaggedConst(Self.Out);
 
             const gx1, const gx2 = try self.backward(out.grad.?);
 
-            const in1 = self.base.context.refVariable(self.in1.?).asUntagged(Self.In1);
-            const in2 = self.base.context.refVariable(self.in2.?).asUntagged(Self.In2);
+            const in1 = context.refVariable(self.in1.?).asUntagged(Self.In1);
+            const in2 = context.refVariable(self.in2.?).asUntagged(Self.In2);
 
             if (in1.grad) |in1_grad| {
-                in1.grad = try add(Self.Out, in1_grad, gx1, self.base.context);
+                in1.grad = try add(Self.Out, in1_grad, gx1);
             } else {
                 in1.grad = gx1;
             }
             if (in2.grad) |in2_grad| {
-                in2.grad = try add(Self.Out, in2_grad, gx2, self.base.context);
+                in2.grad = try add(Self.Out, in2_grad, gx2);
             } else {
                 in2.grad = gx2;
             }
@@ -133,21 +137,22 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.self_key.context;
 
-            const in1 = self.base.context.refVariable(self.in1.?).asUntagged(Self.In1);
+            const in1 = context.refVariable(self.in1.?).asUntagged(Self.In1);
 
             if (in1.creator) |creator1| {
-                const in1_creator = self.base.context.refFunction(creator1);
+                const in1_creator = context.refFunction(creator1);
                 if (!seen_set.contains(in1_creator)) {
                     try seen_set.put(in1_creator, {});
                     try queue.add(in1_creator);
                 }
             }
 
-            const in2 = self.base.context.refVariable(self.in2.?).asUntagged(Self.In2);
+            const in2 = context.refVariable(self.in2.?).asUntagged(Self.In2);
 
             if (in2.creator) |creator2| {
-                const in2_creator = self.base.context.refFunction(creator2);
+                const in2_creator = context.refFunction(creator2);
                 if (!seen_set.contains(in2_creator)) {
                     try seen_set.put(in2_creator, {});
                     try queue.add(in2_creator);
@@ -161,11 +166,11 @@ fn makefunc(
     comptime F: type,
     x1: VarKey,
     x2: VarKey,
-    context: *Context,
 ) !VarKey {
-    const funckey = try F.create(context);
+    std.debug.assert(x1.context == x2.context);
+    const funckey = try F.create(x1.context);
 
-    return (try context.refFunction(funckey).forward(&.{ x1, x2 }))[0];
+    return (try x1.context.refFunction(funckey).forward(&.{ x1, x2 }))[0];
 }
 
 pub fn Add(comptime T: type) type {
@@ -188,15 +193,16 @@ pub fn Add(comptime T: type) type {
         const Self = Add(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.self_key.context;
             if (x1 == x2) {
-                var new_x1 = try x1.cloneAsync(self.base.context.stream);
-                defer new_x1.deinitAsync(self.base.context.stream);
+                var new_x1 = try x1.cloneAsync(context.stream);
+                defer new_x1.deinitAsync(context.stream);
 
-                const y = try new_x1.add(x2, self.base.context.cuda_context, self.base.context.stream);
+                const y = try new_x1.add(x2, context.cuda_context, context.stream);
 
                 return y;
             } else {
-                const y = try x1.add(x2, self.base.context.cuda_context, self.base.context.stream);
+                const y = try x1.add(x2, context.cuda_context, context.stream);
 
                 return y;
             }
@@ -212,9 +218,8 @@ pub fn add(
     comptime T: type,
     x1: VarKey,
     x2: VarKey,
-    context: *Context,
 ) !VarKey {
-    return try makefunc(Add(T), x1, x2, context);
+    return try makefunc(Add(T), x1, x2);
 }
 
 pub fn Sub(comptime T: type) type {
@@ -237,33 +242,29 @@ pub fn Sub(comptime T: type) type {
         const Self = Sub(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.self_key.context;
             if (x1 == x2) {
-                var new_x1 = try x1.cloneAsync(self.base.context.stream);
-                defer new_x1.deinitAsync(self.base.context.stream);
+                var new_x1 = try x1.cloneAsync(context.stream);
+                defer new_x1.deinitAsync(context.stream);
 
-                const y = try new_x1.sub(x2, self.base.context.cuda_context, self.base.context.stream);
+                const y = try new_x1.sub(x2, context.cuda_context, context.stream);
 
                 return y;
             } else {
-                const y = try x1.sub(x2, self.base.context.cuda_context, self.base.context.stream);
+                const y = try x1.sub(x2, context.cuda_context, context.stream);
 
                 return y;
             }
         }
 
-        pub fn backward(self: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
-            return .{ gy, try neg(Self.In2, gy, self.base.context) };
+        pub fn backward(_: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
+            return .{ gy, try neg(Self.In2, gy) };
         }
     };
 }
 
-pub fn sub(
-    comptime T: type,
-    x1: VarKey,
-    x2: VarKey,
-    context: *Context,
-) !VarKey {
-    return try makefunc(Sub(T), x1, x2, context);
+pub fn sub(comptime T: type, x1: VarKey, x2: VarKey) !VarKey {
+    return try makefunc(Sub(T), x1, x2);
 }
 
 pub fn Mul(comptime T: type) type {
@@ -286,27 +287,23 @@ pub fn Mul(comptime T: type) type {
         const Self = Mul(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
-            var y = try x1.cloneAsync(self.base.context.stream);
-            errdefer y.deinitAsync(self.base.context.stream);
+            const context = self.base.self_key.context;
+            var y = try x1.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
 
-            try y.product(x2, self.base.context.stream);
+            try y.product(x2, context.stream);
 
             return y;
         }
 
         pub fn backward(self: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
-            return .{ try mul(In1, gy, self.in2.?, self.base.context), try mul(In2, gy, self.in1.?, self.base.context) };
+            return .{ try mul(In1, gy, self.in2.?), try mul(In2, gy, self.in1.?) };
         }
     };
 }
 
-pub fn mul(
-    comptime T: type,
-    x1: VarKey,
-    x2: VarKey,
-    context: *Context,
-) !VarKey {
-    return try makefunc(Mul(T), x1, x2, context);
+pub fn mul(comptime T: type, x1: VarKey, x2: VarKey) !VarKey {
+    return try makefunc(Mul(T), x1, x2);
 }
 
 pub fn Div(comptime T: type) type {
@@ -329,30 +326,26 @@ pub fn Div(comptime T: type) type {
         const Self = Div(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
-            var y = try x1.cloneAsync(self.base.context.stream);
-            errdefer y.deinitAsync(self.base.context.stream);
+            const context = self.base.self_key.context;
+            var y = try x1.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
 
-            try y.divide(x2, self.base.context.stream);
+            try y.divide(x2, context.stream);
 
             return y;
         }
 
         pub fn backward(self: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
-            const gx0 = try div(T, gy, self.in1.?, self.base.context);
-            const x1_sq = try pow(T, self.in1.?, 2, self.base.context);
-            const minus_x0 = try neg(T, self.in1.?, self.base.context);
-            const gx1 = try mul(T, gy, try div(T, minus_x0, x1_sq, self.base.context), self.base.context);
+            const gx0 = try div(T, gy, self.in1.?);
+            const x1_sq = try square(T, self.in1.?);
+            const minus_x0 = try neg(T, self.in1.?);
+            const gx1 = try mul(T, gy, try div(T, minus_x0, x1_sq));
 
             return .{ gx0, gx1 };
         }
     };
 }
 
-pub fn div(
-    comptime T: type,
-    x1: VarKey,
-    x2: VarKey,
-    context: *Context,
-) !VarKey {
-    return try makefunc(Div(T), x1, x2, context);
+pub fn div(comptime T: type, x1: VarKey, x2: VarKey) !VarKey {
+    return try makefunc(Div(T), x1, x2);
 }

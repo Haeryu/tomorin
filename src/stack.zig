@@ -23,7 +23,19 @@ pub fn LevelStack(comptime T: type) type {
         }
 
         pub fn getTopLevel(self: *Self) *std.ArrayList(T) {
-            return &self.levels.items[self.levels.items.len - 1];
+            return self.getLevel(self.getTopLevelIndex());
+        }
+
+        pub fn getTopLevelIndex(self: *Self) usize {
+            return self.levels.items.len - 1;
+        }
+
+        pub fn getLevel(self: *Self, level: usize) *std.ArrayList(T) {
+            return &self.levels.items[level];
+        }
+
+        pub fn getLevelConst(self: *const Self, level: usize) *const std.ArrayList(T) {
+            return &self.levels.items[level];
         }
 
         pub fn getTopLevelTopItemIndex(self: *Self) usize {

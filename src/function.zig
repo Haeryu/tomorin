@@ -65,11 +65,11 @@ pub const Function = struct {
 
 pub const FunctionBase = struct {
     self_key: FuncKey,
-    context: *Context,
     generation: usize = 0,
 };
 
 pub usingnamespace @import("function1in1out.zig");
 // pub usingnamespace @import("function1in2out.zig");
 pub usingnamespace @import("function2in1out.zig");
-// pub usingnamespace @import("function1scalar1in1out.zig");
+pub usingnamespace @import("function1scalar1in1out.zig");
+pub usingnamespace @import("function2scalar1in1out.zig");

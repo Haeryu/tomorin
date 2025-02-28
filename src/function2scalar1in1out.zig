@@ -16,14 +16,13 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 
+const FuncDecorator1in1outBase = @import("function1in1out.zig").FuncDecorator1in1outBase;
 const add = @import("function2in1out.zig").add;
-const scale = @import("function1scalar1in1out.zig").scale;
 const mul = @import("function2in1out.zig").mul;
 
-// TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
-pub fn FuncDecorator1in1out(comptime Self: type) type {
+pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
     return struct {
-        pub fn create(context: *Context) !FuncKey {
+        pub fn create(context: *Context, scalar1: Self.Scalar1, scalar2: Self.Scalar2) !FuncKey {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
@@ -41,6 +40,8 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             self.* = .{
                 .in = null,
                 .out = null,
+                .scalar1 = scalar1,
+                .scalar2 = scalar2,
                 .base = .{
                     .self_key = self_key,
                 },
@@ -52,7 +53,6 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
-
             if (Self.owns_in) {
                 context.releaseVariable(self.in.?);
             }
@@ -112,7 +112,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             const in = context.refVariable(self.in.?).asUntagged(Self.In);
 
             if (in.grad) |in_grad| {
-                in.grad = try add(Self.Out, in_grad, gx);
+                in.grad = try add(Self.Out, in_grad, gx, context);
             } else {
                 in.grad = gx;
             }
@@ -121,7 +121,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
-            const in = context.refVariable(self.in.?).asUntagged(Self.In);
+            const in = self.base.context.refVariable(self.in.?).asUntagged(Self.In);
 
             if (in.creator) |creator| {
                 const in_creator = context.refFunction(creator);
@@ -137,113 +137,48 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
 fn makefunc(
     comptime F: type,
     x: VarKey,
+    scalar1: F.Scalar1,
+    scalar2: F.Scalar2,
 ) !VarKey {
-    const funckey = try F.create(x.context);
+    const funckey = try F.create(x.context, scalar1, scalar2);
+
     return (try x.context.refFunction(funckey).forward(&.{x}))[0];
 }
 
-pub fn Neg(comptime T: type) type {
+pub fn ScaleShift(comptime T: type) type {
     return struct {
         in: ?VarKey,
         out: ?VarKey,
+        scalar1: T,
+        scalar2: T,
         base: FunctionBase,
 
+        const Scalar = T;
         const In = T;
         const Out = T;
 
         const owns_in = false;
         const owns_out = false;
 
-        pub usingnamespace FuncDecorator1in1out(Self);
+        pub usingnamespace FuncDecorator2Scalar1in1out(Self);
 
-        const Self = Neg(T);
-
-        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.self_key.context;
-            var y = try x.cloneAsync(context.stream);
-
-            return try y.scale(-1.0, context.cuda_context, context.stream);
-        }
-
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            const context = self.base.self_key.context;
-            return try neg(T, gy, context);
-        }
-    };
-}
-
-pub fn neg(
-    comptime T: type,
-    x: VarKey,
-) !VarKey {
-    return try makefunc(Neg(T), x);
-}
-
-pub fn Square(comptime T: type) type {
-    return struct {
-        in: ?VarKey,
-        out: ?VarKey,
-        base: FunctionBase,
-
-        const In = T;
-        const Out = T;
-
-        const owns_in = true;
-        const owns_out = false;
-
-        pub usingnamespace FuncDecorator1in1out(Self);
-
-        const Self = Square(T);
+        const Self = ScaleShift(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.self_key.context;
             var y = try x.cloneAsync(context.stream);
-            try y.product(x, context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.scaleShift(self.scalar1, self.scalar2, context.stream);
             return y;
         }
 
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            return try mul(T, try scale(T, self.in.?, 2.0), gy);
+        pub fn backward(_: *Self, gy: VarKey) !VarKey {
+            return gy;
         }
     };
 }
 
-pub fn square(
-    comptime T: type,
-    x: VarKey,
-) !VarKey {
-    return try makefunc(Square(T), x);
-}
-
-pub fn Exp(comptime T: type) type {
-    return struct {
-        in: ?VarKey,
-        out: ?VarKey,
-        base: FunctionBase,
-
-        const In = T;
-        const Out = T;
-
-        const owns_in = true;
-        const owns_out = false;
-
-        pub usingnamespace FuncDecorator1in1out(Self);
-
-        const Self = Exp(T);
-
-        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.self_key.context;
-            var y = try x.cloneAsync(context.stream);
-            try y.exp(x, context.stream);
-            return y;
-        }
-
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            return try mul(T, self.in.?, gy);
-        }
-    };
-}
-
-pub fn exp(comptime T: type, x: VarKey) !VarKey {
-    return try makefunc(Exp(T), x);
+pub fn scaleShift(comptime T: type, x: VarKey, scale: T, shift: T) !VarKey {
+    return try makefunc(ScaleShift(T), x, scale, shift);
 }

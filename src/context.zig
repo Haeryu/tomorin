@@ -101,8 +101,16 @@ pub const Context = struct {
         return self.tagged_var_level_stack.pushAtTopLevel(tagged_var);
     }
 
-    pub fn getTopLevelVariables(self: *Context) *std.ArrayList(Function) {
-        return self.function_level_stack.getTopLevel();
+    pub fn getTopLevelVariables(self: *Context) *std.ArrayList(TaggedVar) {
+        return self.tagged_var_level_stack.getTopLevel();
+    }
+
+    pub fn getLevelVariables(self: *Context, level: usize) *std.ArrayList(TaggedVar) {
+        return self.tagged_var_level_stack.getLevel(level);
+    }
+
+    pub fn getLevelVariablesConst(self: *const Context, level: usize) *const std.ArrayList(TaggedVar) {
+        return self.tagged_var_level_stack.getLevelConst(level);
     }
 
     pub fn getCurrentLevelTopFunctionIndex(self: *Context) usize {
@@ -131,10 +139,9 @@ pub const Context = struct {
         data: GPUTensor(T),
         name: ?[]const u8,
     ) !VarKey {
-        var variable: Variable(T) = .{
+        const variable: Variable(T) = .{
             .data = data,
             .name = name,
-            .context = self,
             .self_key = undefined,
             .refcount = 1,
         };
@@ -143,12 +150,15 @@ pub const Context = struct {
 
         try self.pushTaggedVarAtCurrentLevelTop(tagged);
 
-        variable.self_key = .{
+        const self_key: VarKey = .{
             .level = self.getCurrentLevel(),
             .index = self.getCurrentLevelTopTaggedVarIndex(),
+            .context = self,
         };
 
-        return variable.self_key;
+        self.getCurrentLevelTopTaggedVar().setSelfkey(self_key);
+
+        return self_key;
     }
 
     pub fn registerFunction(self: *Context, function: Function) !FuncKey {
@@ -157,6 +167,7 @@ pub const Context = struct {
         return .{
             .level = self.getCurrentLevel(),
             .index = self.getCurrentLevelTopFunctionIndex(),
+            .context = self,
         };
     }
 
@@ -208,7 +219,7 @@ pub const Context = struct {
         try self.makeNewLevel();
 
         const variable = self.acquireVariable(key).asUntagged(T);
-        const creator = variable.getCreator() orelse return error.NoCreator;
+        const creator = variable.refCreator() orelse return error.NoCreator;
 
         var ones = try tomo.tensor.GPUTensor(T).initAsync(variable.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);
@@ -247,14 +258,28 @@ pub const Context = struct {
             self.gcLevel(func_level);
         }
     }
+
+    pub fn countAliveVariableAtLevel(self: *const Context, level: usize) usize {
+        const var_level = self.getLevelVariablesConst(level);
+        var count: usize = 0;
+        for (var_level.items) |*variable| {
+            if (variable.getRefCount() != 0) {
+                count += 1;
+            }
+        }
+
+        return count;
+    }
 };
 
 pub const VarKey = struct {
     level: usize,
     index: usize,
+    context: *Context,
 };
 
 pub const FuncKey = struct {
     level: usize,
     index: usize,
+    context: *Context,
 };

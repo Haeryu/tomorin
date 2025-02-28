@@ -18,7 +18,6 @@ pub fn Variable(comptime T: type) type {
     return struct {
         data: GPUTensor(T),
         name: ?[]const u8 = null,
-        context: *Context,
         generation: usize = 0,
         grad: ?VarKey = null,
         creator: ?FuncKey = null,
@@ -28,7 +27,7 @@ pub fn Variable(comptime T: type) type {
         const Self = @This();
 
         pub fn deinit(self: *Self) void {
-            self.data.deinitAsync(self.context.stream);
+            self.data.deinitAsync(self.self_key.context.stream);
         }
 
         pub fn setCreator(self: *Self, creator: FuncKey, creator_generation: usize) void {
@@ -36,8 +35,12 @@ pub fn Variable(comptime T: type) type {
             self.generation = creator_generation + 1;
         }
 
-        pub fn getCreator(self: *const Self) ?*Function {
-            return self.context.refFunction(self.creator orelse return null);
+        pub fn refCreator(self: *const Self) ?*Function {
+            return self.self_key.context.refFunction(self.creator orelse return null);
+        }
+
+        pub fn refGrad(self: *const Self) ?*TaggedVar {
+            return self.self_key.context.refVariable(self.grad orelse return null);
         }
 
         pub fn acquire(self: *Self) void {
@@ -49,11 +52,15 @@ pub fn Variable(comptime T: type) type {
         }
 
         pub fn acquireGrad(self: *Self) void {
-            return self.context.refVariable(self.grad.?).acquire();
+            return self.self_key.context.refVariable(self.grad.?).acquire();
         }
 
         pub fn releaseGrad(self: *Self) void {
-            return self.context.refVariable(self.grad.?).release();
+            return self.self_key.context.refVariable(self.grad.?).release();
+        }
+
+        pub fn setSelfkey(self: *Self, self_key: VarKey) void {
+            self.self_key = self_key;
         }
     };
 }
@@ -118,6 +125,12 @@ pub const TaggedVar = union(enum) {
         }
     }
 
+    pub fn setSelfkey(self: *TaggedVar, self_key: VarKey) void {
+        switch (self.*) {
+            inline else => |*v| v.setSelfkey(self_key),
+        }
+    }
+
     pub fn acquire(self: *TaggedVar) void {
         switch (self.*) {
             inline else => |*v| v.acquire(),
@@ -128,6 +141,12 @@ pub const TaggedVar = union(enum) {
         switch (self.*) {
             inline else => |*v| v.release(),
         }
+    }
+
+    pub fn refGrad(self: *TaggedVar) ?*TaggedVar {
+        return switch (self.*) {
+            inline else => |*v| v.refGrad(),
+        };
     }
 
     pub fn getRefCount(self: *TaggedVar) usize {
