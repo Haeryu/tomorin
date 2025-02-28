@@ -106,22 +106,22 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const in1 = self.base.context.getVariable(self.in1.?).asUntagged(Self.In1);
 
-            if (in1.creator == null) return;
-
-            const in1_creator = self.base.context.getFunction(in1.creator.?);
-            if (!seen_set.contains(in1_creator)) {
-                try seen_set.put(in1_creator, {});
-                try queue.add(in1_creator);
+            if (in1.creator) |creator1| {
+                const in1_creator = self.base.context.getFunction(creator1);
+                if (!seen_set.contains(in1_creator)) {
+                    try seen_set.put(in1_creator, {});
+                    try queue.add(in1_creator);
+                }
             }
 
             const in2 = self.base.context.getVariable(self.in2.?).asUntagged(Self.In2);
 
-            if (in2.creator == null) return;
-
-            const in2_creator = self.base.context.getFunction(in2.creator.?);
-            if (!seen_set.contains(in2_creator)) {
-                try seen_set.put(in2_creator, {});
-                try queue.add(in2_creator);
+            if (in2.creator) |creator2| {
+                const in2_creator = self.base.context.getFunction(creator2);
+                if (!seen_set.contains(in2_creator)) {
+                    try seen_set.put(in2_creator, {});
+                    try queue.add(in2_creator);
+                }
             }
         }
     };
@@ -226,4 +226,43 @@ pub fn sub(
     context: *Context,
 ) !VarKey {
     return try makefunc(Sub(T), x1, x2, context);
+}
+
+pub fn Mul(comptime T: type) type {
+    return struct {
+        in1: ?VarKey,
+        in2: ?VarKey,
+        out: ?VarKey,
+        base: FunctionBase,
+
+        const In1 = T;
+        const In2 = T;
+        const Out = T;
+
+        pub usingnamespace FuncDecorator2in1out(Self);
+
+        const Self = Mul(T);
+
+        pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            var y = try x1.cloneAsync(self.base.context.stream);
+            errdefer y.deinitAsync(self.base.context.stream);
+
+            try y.product(x2, self.base.context.stream);
+
+            return y;
+        }
+
+        pub fn backward(self: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
+            return .{ try mul(In1, gy, self.in2.?, self.base.context), try mul(In2, gy, self.in1.?, self.base.context) };
+        }
+    };
+}
+
+pub fn mul(
+    comptime T: type,
+    x1: VarKey,
+    x2: VarKey,
+    context: *Context,
+) !VarKey {
+    return try makefunc(Mul(T), x1, x2, context);
 }
