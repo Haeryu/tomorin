@@ -11,8 +11,6 @@ const VarKey = @import("context.zig").VarKey;
 const FuncKey = @import("context.zig").FuncKey;
 
 const Variable = @import("variable.zig").Variable;
-const TaggedVar = @import("variable.zig").TaggedVar;
-const PTaggedVar = @import("variable.zig").PTaggedVar;
 
 const sliceCast = @import("util.zig").sliceCast;
 
@@ -20,24 +18,48 @@ pub const Function = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    pub const Queue = std.PriorityQueue(
+        *Function,
+        void,
+        struct {
+            fn comp(_: void, a: *Function, b: *Function) std.math.Order {
+                return std.math.order(b.getGeneration(), a.getGeneration());
+            }
+        }.comp,
+    );
+
+    pub const SeenSet = std.AutoHashMap(*Function, void);
+
     const VTable = struct {
         destroy: *const fn (ctx: *anyopaque) void,
 
-        forward: *const fn (ctx: *anyopaque, args: []VarKey) anyerror![]VarKey,
+        forward: *const fn (ctx: *anyopaque, args: []const VarKey) anyerror![]const VarKey,
 
-        backward: *const fn (ctx: *anyopaque, args: []VarKey) anyerror![]VarKey,
+        backward: *const fn (ctx: *anyopaque) anyerror!void,
+
+        enqueue: *const fn (ctx: *anyopaque, queue: *Queue, seen_set: *SeenSet) anyerror!void,
+
+        get_generation: *const fn (ctx: *anyopaque) usize,
     };
 
     pub fn destroy(self: *Function) void {
         self.vtable.destroy(self.ptr);
     }
 
-    pub fn forward(self: *Function, args: []VarKey) ![]VarKey {
+    pub fn forward(self: *Function, args: []const VarKey) ![]const VarKey {
         return try self.vtable.forward(self.ptr, args);
     }
 
-    pub fn backward(self: *Function, args: []VarKey) ![]VarKey {
-        try self.vtable.backward(self.ptr, args);
+    pub fn backward(self: *Function) !void {
+        try self.vtable.backward(self.ptr);
+    }
+
+    pub fn enqueue(self: *Function, queue: *Queue, seen_set: *SeenSet) !void {
+        try self.vtable.enqueue(self.ptr, queue, seen_set);
+    }
+
+    pub fn getGeneration(self: *Function) usize {
+        return self.vtable.get_generation(self.ptr);
     }
 };
 

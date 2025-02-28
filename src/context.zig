@@ -23,8 +23,8 @@ pub const Context = struct {
         cuda_context: *const CudaContext,
         stream: *const Stream,
         enable_backprop_graph: bool,
-    ) Context {
-        return .{
+    ) !Context {
+        var self: Context = .{
             .allocator = allocator,
             .cuda_context = cuda_context,
             .stream = stream,
@@ -32,6 +32,10 @@ pub const Context = struct {
             .function_level_stack = LevelStack(Function).init(allocator),
             .tagged_var_level_stack = LevelStack(TaggedVar).init(allocator),
         };
+
+        try self.makeNewLevel();
+
+        return self;
     }
 
     pub fn deinit(self: *Context) void {
@@ -90,26 +94,29 @@ pub const Context = struct {
         return self.function_level_stack.pushAtTopLevel(function);
     }
 
-    pub fn makeVariable(
+    pub fn createVariable(
         self: *Context,
         comptime T: type,
         data: GPUTensor(T),
         name: ?[]const u8,
     ) !VarKey {
-        const variable: Variable(T) = .{
+        var variable: Variable(T) = .{
             .data = data,
             .name = name,
             .context = self,
+            .self_key = undefined,
         };
 
         const tagged = TaggedVar.init(T, variable);
 
         try self.pushTaggedVarAtCurrentLevelTop(tagged);
 
-        return .{
+        variable.self_key = .{
             .level = self.getCurrentLevel(),
             .index = self.getCurrentLevelTopTaggedVarIndex(),
         };
+
+        return variable.self_key;
     }
 
     pub fn registerFunction(self: *Context, function: Function) !FuncKey {
@@ -135,6 +142,38 @@ pub const Context = struct {
 
     pub fn getFunctionConst(self: *Context, key: FuncKey) *const Function {
         return &self.function_level_stack.levels.items[key.level].items[key.index];
+    }
+
+    pub fn backward(self: *Context, comptime T: type, key: VarKey) !void {
+        if (key.level < self.getCurrentLevel()) {
+            return;
+        }
+
+        try self.makeNewLevel();
+
+        const variable = self.getVariable(key).asUntagged(T);
+        const creator = variable.getCreator() orelse return error.NoCreator;
+
+        var ones = try tomo.tensor.GPUTensor(T).initAsync(variable.data.base.getShape(), self.stream);
+        errdefer ones.deinitAsync(self.stream);
+        try ones.fill(1.0, self.stream);
+
+        const initial_grad = try self.createVariable(T, ones, null);
+        variable.grad = initial_grad;
+
+        var function_queue = Function.Queue.init(self.allocator, {});
+        defer function_queue.deinit();
+
+        var seen_set = Function.SeenSet.init(self.allocator);
+        defer seen_set.deinit();
+
+        try function_queue.add(creator);
+        try seen_set.put(creator, {});
+
+        while (function_queue.removeOrNull()) |function| {
+            try function.backward();
+            try function.enqueue(&function_queue, &seen_set);
+        }
     }
 };
 

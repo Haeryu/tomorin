@@ -31,6 +31,8 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
                     .forward = &forwardDecorated,
                     .backward = &backwardDecorated,
                     .destroy = &destroy,
+                    .get_generation = &getGeneration,
+                    .enqueue = &enqueue,
                 },
             });
 
@@ -51,7 +53,12 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             self.base.context.allocator.destroy(self);
         }
 
-        pub fn forwardDecorated(ctx: *anyopaque, args: []VarKey) ![]VarKey {
+        pub fn getGeneration(ctx: *anyopaque) usize {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return self.base.generation;
+        }
+
+        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey) ![]const VarKey {
             const self: *Self = @ptrCast(@alignCast(ctx));
             self.in = args[0];
 
@@ -60,7 +67,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             var y = try self.forward(&in.data);
             errdefer y.deinitAsync(self.base.context.stream);
 
-            const var_y = try self.base.context.makeVariable(Self.Out, y, null);
+            const var_y = try self.base.context.createVariable(Self.Out, y, null);
             self.out = var_y;
 
             self.base.generation = in.generation;
@@ -69,21 +76,31 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
                 self.base.generation,
             );
 
-            var vars = [1]VarKey{var_y};
-
-            return &vars;
+            return &.{var_y};
         }
 
-        pub fn backwardDecorated(ctx: *anyopaque, args: []VarKey) ![]VarKey {
+        pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
-            const gy = args[0];
+            const out = self.base.context.getVariable(self.out.?).asUntaggedConst(Self.Out);
 
-            const gx = try self.backward(gy);
+            const gx = try self.backward(out.grad.?);
 
-            var tagged_gx = [1]VarKey{gx};
+            const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
+            in.grad = gx;
+        }
 
-            return &tagged_gx;
+        pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
+
+            if (in.creator == null) return;
+
+            const in_creator = self.base.context.getFunction(in.creator.?);
+            if (!seen_set.contains(in_creator)) {
+                try seen_set.put(in_creator, {});
+                try queue.add(in_creator);
+            }
         }
     };
 }
@@ -95,9 +112,7 @@ fn makefunc(
 ) !VarKey {
     const funckey = try F.create(context);
 
-    var varkeys = [1]VarKey{x};
-
-    return (try context.getFunction(funckey).forward(&varkeys))[0];
+    return (try context.getFunction(funckey).forward(&.{x}))[0];
 }
 
 pub fn Neg(comptime T: type) type {
