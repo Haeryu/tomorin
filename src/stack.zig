@@ -55,5 +55,10 @@ pub fn LevelStack(comptime T: type) type {
         pub fn pushAtTopLevel(self: *Self, val: T) !void {
             try self.getTopLevel().append(val);
         }
+
+        pub fn destroyTopLevel(self: *Self) void {
+            self.getTopLevel().deinit();
+            _ = self.levels.pop();
+        }
     };
 }

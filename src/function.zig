@@ -51,7 +51,7 @@ pub const Function = struct {
     }
 
     pub fn backward(self: *Function) !void {
-        try self.vtable.backward(self.ptr);
+        return try self.vtable.backward(self.ptr);
     }
 
     pub fn enqueue(self: *Function, queue: *Queue, seen_set: *SeenSet) !void {

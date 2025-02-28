@@ -49,6 +49,12 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
 
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            if (Self.owns_in) {
+                self.base.context.releaseVariable(self.in.?);
+            }
+            if (Self.owns_out) {
+                self.base.context.releaseVariable(self.out.?);
+            }
             self.base.context.allocator.destroy(self);
         }
 
@@ -61,19 +67,31 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             self.in = args[0];
 
-            const in = self.base.context.getVariable(args[0]).asUntaggedConst(Self.In);
+            const in = self.base.context.acquireVariable(args[0]).asUntaggedConst(Self.In);
+            defer {
+                if (!Self.owns_in) {
+                    self.base.context.releaseVariable(self.in.?);
+                }
+            }
 
             var y = try self.forward(&in.data);
             errdefer y.deinitAsync(self.base.context.stream);
 
             const var_y = try self.base.context.createVariable(Self.Out, y, null);
+            defer self.base.context.releaseVariable(var_y);
             self.out = var_y;
 
             self.base.generation = in.generation;
-            self.base.context.getVariable(var_y).asUntagged(Self.Out).setCreator(
+            self.base.context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
                 self.base.self_key,
                 self.base.generation,
             );
+
+            defer {
+                if (!Self.owns_out) {
+                    self.base.context.releaseVariable(self.out.?);
+                }
+            }
 
             return &.{var_y};
         }
@@ -81,11 +99,11 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
         pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
-            const out = self.base.context.getVariable(self.out.?).asUntaggedConst(Self.Out);
+            const out = self.base.context.refVariable(self.out.?).asUntaggedConst(Self.Out);
 
             const gx = try self.backward(out.grad.?);
 
-            const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
+            const in = self.base.context.refVariable(self.in.?).asUntagged(Self.In);
 
             if (in.grad) |in_grad| {
                 in.grad = try add(Self.Out, in_grad, gx, self.base.context);
@@ -96,10 +114,10 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
 
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
+            const in = self.base.context.refVariable(self.in.?).asUntagged(Self.In);
 
             if (in.creator) |creator| {
-                const in_creator = self.base.context.getFunction(creator);
+                const in_creator = self.base.context.refFunction(creator);
                 if (!seen_set.contains(in_creator)) {
                     try seen_set.put(in_creator, {});
                     try queue.add(in_creator);
@@ -116,7 +134,7 @@ fn makefunc(
 ) !VarKey {
     const funckey = try F.create(context);
 
-    return (try context.getFunction(funckey).forward(&.{x}))[0];
+    return (try context.refFunction(funckey).forward(&.{x}))[0];
 }
 
 pub fn Neg(comptime T: type) type {
@@ -127,6 +145,9 @@ pub fn Neg(comptime T: type) type {
 
         const In = T;
         const Out = T;
+
+        const owns_in = false;
+        const owns_out = false;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 

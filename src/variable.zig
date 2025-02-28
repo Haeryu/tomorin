@@ -23,12 +23,12 @@ pub fn Variable(comptime T: type) type {
         grad: ?VarKey = null,
         creator: ?FuncKey = null,
         self_key: VarKey,
+        refcount: usize,
 
         const Self = @This();
 
         pub fn deinit(self: *Self) void {
             self.data.deinitAsync(self.context.stream);
-            //self.creator_index = null;
         }
 
         pub fn setCreator(self: *Self, creator: FuncKey, creator_generation: usize) void {
@@ -37,7 +37,23 @@ pub fn Variable(comptime T: type) type {
         }
 
         pub fn getCreator(self: *const Self) ?*Function {
-            return self.context.getFunction(self.creator orelse return null);
+            return self.context.refFunction(self.creator orelse return null);
+        }
+
+        pub fn acquire(self: *Self) void {
+            self.refcount += 1;
+        }
+
+        pub fn release(self: *Self) void {
+            self.refcount -= 1;
+        }
+
+        pub fn acquireGrad(self: *Self) void {
+            return self.context.refVariable(self.grad.?).acquire();
+        }
+
+        pub fn releaseGrad(self: *Self) void {
+            return self.context.refVariable(self.grad.?).release();
         }
     };
 }
@@ -99,6 +115,36 @@ pub const TaggedVar = union(enum) {
     pub fn getSelfkey(self: *TaggedVar) VarKey {
         switch (self.*) {
             inline else => |*v| v.var_key,
+        }
+    }
+
+    pub fn acquire(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.acquire(),
+        }
+    }
+
+    pub fn release(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.release(),
+        }
+    }
+
+    pub fn getRefCount(self: *TaggedVar) usize {
+        return switch (self.*) {
+            inline else => |*v| v.refcount,
+        };
+    }
+
+    pub fn acquireGrad(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.acquireGrad(),
+        }
+    }
+
+    pub fn releaseGrad(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.releaseGrad(),
         }
     }
 };

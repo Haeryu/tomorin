@@ -35,34 +35,39 @@ pub fn main() !void {
     try v3.fill(7.0, &stream);
 
     const x1 = try context.createVariable(f32, v1, "x1");
+    defer context.releaseVariable(x1);
 
     const x2 = try context.createVariable(f32, v2, "x2");
+    defer context.releaseVariable(x2);
 
     const x3 = try context.createVariable(f32, v3, "x3");
+    defer context.releaseVariable(x3);
 
     // const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, x1, &context), &context), &context);
     //const y = try tomorin.function.neg(f32, x1, &context);
     const y = try div(f32, try add(f32, try div(f32, x1, try neg(f32, x1, &context), &context), x2, &context), x3, &context);
+    const y_acq = context.acquireVariable(y);
+    defer context.releaseVariable(y);
 
-    try context.backward(f32, y);
+    try context.backward(f32, y, &.{ x1, x2, x3 });
 
     try stream.sync();
 
-    var v_host = try context.getVariable(y).asUntagged(f32).data.toHost(allocator, &stream);
+    var v_host = try y_acq.asUntagged(f32).data.toHost(allocator, &stream);
     defer v_host.deinit(allocator);
 
-    const px1 = context.getVariable(x1).asUntagged(f32);
-    var gx1 = context.getVariable(px1.grad.?).asUntagged(f32);
+    const px1 = context.refVariable(x1).asUntagged(f32);
+    var gx1 = context.refVariable(px1.grad.?).asUntagged(f32);
     var gx1_host = try gx1.data.toHost(allocator, &stream);
     defer gx1_host.deinit(allocator);
 
-    const px2 = context.getVariable(x2).asUntagged(f32);
-    var gx2 = context.getVariable(px2.grad.?).asUntagged(f32);
+    const px2 = context.refVariable(x2).asUntagged(f32);
+    var gx2 = context.refVariable(px2.grad.?).asUntagged(f32);
     var gx2_host = try gx2.data.toHost(allocator, &stream);
     defer gx2_host.deinit(allocator);
 
-    const px3 = context.getVariable(x3).asUntagged(f32);
-    var gx3 = context.getVariable(px3.grad.?).asUntagged(f32);
+    const px3 = context.refVariable(x3).asUntagged(f32);
+    var gx3 = context.refVariable(px3.grad.?).asUntagged(f32);
     var gx3_host = try gx3.data.toHost(allocator, &stream);
     defer gx3_host.deinit(allocator);
 
