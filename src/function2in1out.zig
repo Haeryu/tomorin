@@ -69,21 +69,21 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             return self.base.generation;
         }
 
-        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey) ![]const VarKey {
+        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey, out: []?VarKey) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
 
             self.in1 = args[0];
             self.in2 = args[1];
 
-            const in1 = context.acquireVariable(args[0]).asUntaggedConst(Self.In1);
+            var in1 = context.acquireVariable(args[0]).asUntaggedConst(Self.In1);
             defer {
                 if (!Self.owns_in1) {
                     context.releaseVariable(self.in1.?);
                 }
             }
 
-            const in2 = context.acquireVariable(args[1]).asUntaggedConst(Self.In2);
+            var in2 = context.acquireVariable(args[1]).asUntaggedConst(Self.In2);
             defer {
                 if (!Self.owns_in2) {
                     context.releaseVariable(self.in2.?);
@@ -97,7 +97,11 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             defer context.releaseVariable(var_y);
             self.out = var_y;
 
+            in1 = context.acquireVariable(args[0]).asUntaggedConst(Self.In1);
+            in2 = context.acquireVariable(args[1]).asUntaggedConst(Self.In2);
+
             self.base.generation = @max(in1.generation, in2.generation);
+
             context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
                 self.base.self_key,
                 self.base.generation,
@@ -109,7 +113,8 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                 }
             }
 
-            return &.{var_y};
+            // return &.{var_y};
+            out[0] = var_y;
         }
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
@@ -170,7 +175,11 @@ fn makefunc(
     std.debug.assert(x1.context == x2.context);
     const funckey = try F.create(x1.context);
 
-    return (try x1.context.refFunction(funckey).forward(&.{ x1, x2 }))[0];
+    var out: [Function.max_out]?VarKey = .{null} ** Function.max_out;
+
+    try x1.context.refFunction(funckey).forward(&.{ x1, x2 }, &out);
+
+    return out[0].?;
 }
 
 pub fn Add(comptime T: type) type {

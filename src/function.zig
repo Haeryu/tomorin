@@ -18,6 +18,8 @@ pub const Function = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    pub const max_out = 3;
+
     pub const Queue = std.PriorityQueue(
         *Function,
         void,
@@ -33,7 +35,7 @@ pub const Function = struct {
     const VTable = struct {
         destroy: *const fn (ctx: *anyopaque) void,
 
-        forward: *const fn (ctx: *anyopaque, args: []const VarKey) anyerror![]const VarKey,
+        forward: *const fn (ctx: *anyopaque, args: []const VarKey, out: []?VarKey) anyerror!void,
 
         backward: *const fn (ctx: *anyopaque) anyerror!void,
 
@@ -46,8 +48,8 @@ pub const Function = struct {
         self.vtable.destroy(self.ptr);
     }
 
-    pub fn forward(self: *Function, args: []const VarKey) ![]const VarKey {
-        return try self.vtable.forward(self.ptr, args);
+    pub fn forward(self: *Function, args: []const VarKey, out: []?VarKey) !void {
+        try self.vtable.forward(self.ptr, args, out);
     }
 
     pub fn backward(self: *Function) !void {
@@ -73,3 +75,15 @@ pub usingnamespace @import("function1in1out.zig");
 pub usingnamespace @import("function2in1out.zig");
 pub usingnamespace @import("function1scalar1in1out.zig");
 pub usingnamespace @import("function2scalar1in1out.zig");
+
+pub fn matyas(comptime T: type, x: VarKey, y: VarKey) !VarKey {
+    const x_y_sq = try @This().add(T, try @This().square(T, x), try @This().square(T, y));
+    const x_y_sq_sc = try @This().scale(T, x_y_sq, 0.26);
+
+    const xy = try @This().mul(T, x, y);
+    const xy_sc = try @This().scale(T, xy, 0.48);
+
+    const z = try @This().sub(T, x_y_sq_sc, xy_sc);
+
+    return z;
+}

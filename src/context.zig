@@ -10,6 +10,8 @@ const Function = @import("function.zig").Function;
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
 
+const function = @import("function.zig");
+
 pub const Context = struct {
     cuda_context: *const CudaContext,
     stream: *const Stream,
@@ -125,8 +127,8 @@ pub const Context = struct {
         return self.function_level_stack.getTopLevelTopItemConst();
     }
 
-    pub fn pushFunctionAtCurrentLevelTop(self: *Context, function: Function) !void {
-        return self.function_level_stack.pushAtTopLevel(function);
+    pub fn pushFunctionAtCurrentLevelTop(self: *Context, func: Function) !void {
+        return self.function_level_stack.pushAtTopLevel(func);
     }
 
     pub fn getTopLevelFunctions(self: *Context) *std.ArrayList(Function) {
@@ -161,8 +163,8 @@ pub const Context = struct {
         return self_key;
     }
 
-    pub fn registerFunction(self: *Context, function: Function) !FuncKey {
-        try self.pushFunctionAtCurrentLevelTop(function);
+    pub fn registerFunction(self: *Context, func: Function) !FuncKey {
+        try self.pushFunctionAtCurrentLevelTop(func);
 
         return .{
             .level = self.getCurrentLevel(),
@@ -202,7 +204,7 @@ pub const Context = struct {
         return &self.function_level_stack.levels.items[key.level].items[key.index];
     }
 
-    pub fn refFunctionConst(self: *Context, key: FuncKey) *const Function {
+    pub fn refFunctionConst(self: *const Context, key: FuncKey) *const Function {
         return &self.function_level_stack.levels.items[key.level].items[key.index];
     }
 
@@ -238,9 +240,9 @@ pub const Context = struct {
         try function_queue.add(creator);
         try seen_set.put(creator, {});
 
-        while (function_queue.removeOrNull()) |function| {
-            try function.backward();
-            try function.enqueue(&function_queue, &seen_set);
+        while (function_queue.removeOrNull()) |func| {
+            try func.backward();
+            try func.enqueue(&function_queue, &seen_set);
         }
 
         for (grad_catch_vars) |grad_catch_var| {
@@ -277,6 +279,67 @@ pub const VarKey = struct {
     index: usize,
     context: *Context,
 };
+
+pub fn VarKeyTyped(comptime T: type) type {
+    return struct {
+        varkey: VarKey,
+
+        const Self = @This();
+
+        pub fn neg(self: Self) !Self {
+            return Self{ .varkey = try function.neg(T, self.varkey) };
+        }
+
+        pub fn square(self: Self) !Self {
+            return Self{ .varkey = try function.square(T, self.varkey) };
+        }
+
+        pub fn exp(self: Self) !Self {
+            return Self{ .varkey = try function.exp(T, self.varkey) };
+        }
+
+        //
+
+        pub fn shift(self: Self, scalar: T) !Self {
+            return Self{ .varkey = try function.shift(T, self.varkey, scalar) };
+        }
+
+        pub fn scale(self: Self, scalar: T) !Self {
+            return Self{ .varkey = try function.scale(T, self.varkey, scalar) };
+        }
+
+        pub fn powf(self: Self, scalar: T) !Self {
+            return Self{ .varkey = try function.powf(T, self.varkey, scalar) };
+        }
+
+        pub fn pow(self: Self, scalar: i32) !Self {
+            return Self{ .varkey = try function.pow(T, self.varkey, scalar) };
+        }
+
+        //
+        pub fn scaleShift(self: Self, scal: T, shif: T) !Self {
+            return Self{ .varkey = try function.scaleShift(T, self.varkey, scal, shif) };
+        }
+
+        //
+
+        pub fn add(self: Self, other: Self) !Self {
+            return Self{ .varkey = try function.add(T, self.varkey, other) };
+        }
+
+        pub fn sub(self: Self, other: Self) !Self {
+            return Self{ .varkey = try function.sub(T, self.varkey, other) };
+        }
+
+        pub fn mul(self: Self, other: Self) !Self {
+            return Self{ .varkey = try function.mul(T, self.varkey, other) };
+        }
+
+        pub fn div(self: Self, other: Self) !Self {
+            return Self{ .varkey = try function.div(T, self.varkey, other) };
+        }
+    };
+}
 
 pub const FuncKey = struct {
     level: usize,

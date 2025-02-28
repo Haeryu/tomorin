@@ -67,12 +67,12 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             return self.base.generation;
         }
 
-        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey) ![]const VarKey {
+        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey, out: []?VarKey) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
             self.in = args[0];
 
-            const in = context.acquireVariable(args[0]).asUntaggedConst(Self.In);
+            var in = context.acquireVariable(args[0]).asUntaggedConst(Self.In);
             defer {
                 if (!Self.owns_in) {
                     context.releaseVariable(self.in.?);
@@ -86,6 +86,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             defer context.releaseVariable(var_y);
             self.out = var_y;
 
+            in = context.acquireVariable(args[0]).asUntaggedConst(Self.In);
             self.base.generation = in.generation;
             context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
                 self.base.self_key,
@@ -98,7 +99,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
                 }
             }
 
-            return &.{var_y};
+            out[0] = var_y;
         }
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
@@ -134,12 +135,11 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
     };
 }
 
-fn makefunc(
-    comptime F: type,
-    x: VarKey,
-) !VarKey {
+fn makefunc(comptime F: type, x: VarKey) !VarKey {
     const funckey = try F.create(x.context);
-    return (try x.context.refFunction(funckey).forward(&.{x}))[0];
+    var out: [Function.max_out]?VarKey = .{null} ** Function.max_out;
+    try x.context.refFunction(funckey).forward(&.{x}, &out);
+    return out[0].?;
 }
 
 pub fn Neg(comptime T: type) type {
@@ -165,9 +165,8 @@ pub fn Neg(comptime T: type) type {
             return try y.scale(-1.0, context.cuda_context, context.stream);
         }
 
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            const context = self.base.self_key.context;
-            return try neg(T, gy, context);
+        pub fn backward(_: *Self, gy: VarKey) !VarKey {
+            return try neg(T, gy);
         }
     };
 }
