@@ -97,8 +97,8 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             defer context.releaseVariable(var_y);
             self.out = var_y;
 
-            in1 = context.acquireVariable(args[0]).asUntaggedConst(Self.In1);
-            in2 = context.acquireVariable(args[1]).asUntaggedConst(Self.In2);
+            in1 = context.refVariable(args[0]).asUntaggedConst(Self.In1);
+            in2 = context.refVariable(args[1]).asUntaggedConst(Self.In2);
 
             self.base.generation = @max(in1.generation, in2.generation);
 

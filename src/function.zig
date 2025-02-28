@@ -76,6 +76,18 @@ pub usingnamespace @import("function2in1out.zig");
 pub usingnamespace @import("function1scalar1in1out.zig");
 pub usingnamespace @import("function2scalar1in1out.zig");
 
+// pub fn matyas(comptime T: type, x: VarKey, y: VarKey) !VarKey {
+//     const x_y_sq = try @This().add(T, try @This().square(T, x), try @This().square(T, y));
+//     const x_y_sq_sc = try @This().scale(T, x_y_sq, 0.26);
+
+//     const xy = try @This().mul(T, x, y);
+//     const xy_sc = try @This().scale(T, xy, 0.48);
+
+//     const z = try @This().sub(T, x_y_sq_sc, xy_sc);
+
+//     return z;
+// }
+
 pub fn matyas(comptime T: type, x: VarKey, y: VarKey) !VarKey {
     const x_y_sq = try @This().add(T, try @This().square(T, x), try @This().square(T, y));
     const x_y_sq_sc = try @This().scale(T, x_y_sq, 0.26);

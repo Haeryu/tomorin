@@ -62,6 +62,10 @@ pub fn Variable(comptime T: type) type {
         pub fn setSelfkey(self: *Self, self_key: VarKey) void {
             self.self_key = self_key;
         }
+
+        pub fn isDataNull(self: *const Self) bool {
+            return self.data.ptr == null;
+        }
     };
 }
 
@@ -149,7 +153,7 @@ pub const TaggedVar = union(enum) {
         };
     }
 
-    pub fn getRefCount(self: *TaggedVar) usize {
+    pub fn getRefCount(self: *const TaggedVar) usize {
         return switch (self.*) {
             inline else => |*v| v.refcount,
         };
@@ -165,5 +169,11 @@ pub const TaggedVar = union(enum) {
         switch (self.*) {
             inline else => |*v| v.releaseGrad(),
         }
+    }
+
+    pub fn isDataNull(self: *TaggedVar) bool {
+        return switch (self.*) {
+            inline else => |*v| v.isDataNull(),
+        };
     }
 };

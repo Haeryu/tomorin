@@ -86,7 +86,7 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
             defer context.releaseVariable(var_y);
             self.out = var_y;
 
-            in = context.acquireVariable(args[0]).asUntaggedConst(Self.In);
+            in = context.refVariable(args[0]).asUntaggedConst(Self.In);
             self.base.generation = in.generation;
             context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
                 self.base.self_key,

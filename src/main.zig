@@ -25,7 +25,7 @@ pub fn main() !void {
     var cuda_context = try tomo.cuda_context.CudaContext.init();
     defer cuda_context.deinit();
 
-    var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, false);
+    var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, true);
     defer context.deinit();
 
     var v1 = try tomo.tensor.GPUTensor(f32).initAsync(&.{ 2, 2 }, &stream);

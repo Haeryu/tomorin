@@ -265,7 +265,10 @@ pub const Context = struct {
         const var_level = self.getLevelVariablesConst(level);
         var count: usize = 0;
         for (var_level.items) |*variable| {
-            if (variable.getRefCount() != 0) {
+            // if (variable.getRefCount() != 0) {
+            //     count += 1;
+            // }
+            if (!variable.isDataNull()) {
                 count += 1;
             }
         }
