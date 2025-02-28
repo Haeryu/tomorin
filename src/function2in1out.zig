@@ -16,6 +16,8 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 
+const neg = @import("function1in1out.zig").neg;
+
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
         pub fn create(context: *Context) !FuncKey {
@@ -147,7 +149,7 @@ pub fn Add(comptime T: type) type {
         const In2 = T;
         const Out = T;
 
-        pub usingnamespace FuncDecorator2in1out(Add(T));
+        pub usingnamespace FuncDecorator2in1out(Self);
 
         const Self = Add(T);
 
@@ -179,4 +181,49 @@ pub fn add(
     context: *Context,
 ) !VarKey {
     return try makefunc(Add(T), x1, x2, context);
+}
+
+pub fn Sub(comptime T: type) type {
+    return struct {
+        in1: ?VarKey,
+        in2: ?VarKey,
+        out: ?VarKey,
+        base: FunctionBase,
+
+        const In1 = T;
+        const In2 = T;
+        const Out = T;
+
+        pub usingnamespace FuncDecorator2in1out(Self);
+
+        const Self = Sub(T);
+
+        pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            if (x1 == x2) {
+                var new_x1 = try x1.cloneAsync(self.base.context.stream);
+                defer new_x1.deinitAsync(self.base.context.stream);
+
+                const y = try new_x1.sub(x2, self.base.context.cuda_context, self.base.context.stream);
+
+                return y;
+            } else {
+                const y = try x1.sub(x2, self.base.context.cuda_context, self.base.context.stream);
+
+                return y;
+            }
+        }
+
+        pub fn backward(self: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
+            return .{ gy, try neg(Self.In2, gy, self.base.context) };
+        }
+    };
+}
+
+pub fn sub(
+    comptime T: type,
+    x1: VarKey,
+    x2: VarKey,
+    context: *Context,
+) !VarKey {
+    return try makefunc(Sub(T), x1, x2, context);
 }

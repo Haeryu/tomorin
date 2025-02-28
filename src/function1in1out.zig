@@ -128,7 +128,7 @@ pub fn Neg(comptime T: type) type {
         const In = T;
         const Out = T;
 
-        pub usingnamespace FuncDecorator1in1out(Neg(T));
+        pub usingnamespace FuncDecorator1in1out(Self);
 
         const Self = Neg(T);
 

@@ -28,7 +28,7 @@ pub fn main() !void {
 
     // const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, x1, &context), &context), &context);
     //const y = try tomorin.function.neg(f32, x1, &context);
-    const y = try tomorin.function.add(f32, x1, x1, &context);
+    const y = try tomorin.function.sub(f32, x1, x1, &context);
 
     try stream.sync();
     try context.backward(f32, y);
