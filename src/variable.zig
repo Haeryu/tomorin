@@ -43,6 +43,10 @@ pub fn Variable(comptime T: type) type {
             return self.self_key.context.refVariable(self.grad orelse return null);
         }
 
+        pub fn refGradConst(self: *const Self) ?*const TaggedVar {
+            return self.self_key.context.refVariableConst(self.grad orelse return null);
+        }
+
         pub fn acquire(self: *Self) void {
             self.refcount += 1;
         }
@@ -150,6 +154,12 @@ pub const TaggedVar = union(enum) {
     pub fn refGrad(self: *TaggedVar) ?*TaggedVar {
         return switch (self.*) {
             inline else => |*v| v.refGrad(),
+        };
+    }
+
+    pub fn refGradConst(self: *const TaggedVar) ?*const TaggedVar {
+        return switch (self.*) {
+            inline else => |*v| v.refGradConst(),
         };
     }
 

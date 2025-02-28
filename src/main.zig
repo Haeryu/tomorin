@@ -39,10 +39,10 @@ pub fn main() !void {
     try stream.sync();
 
     const x1 = try context.createVariable(f32, v1, "x1");
-    defer context.releaseVariable(x1);
+    defer x1.release();
 
     const x2 = try context.createVariable(f32, v2, "x2");
-    defer context.releaseVariable(x2);
+    defer x2.release();
 
     const z = try function.matyas(f32, x1, x2);
 
@@ -50,14 +50,16 @@ pub fn main() !void {
 
     try stream.sync();
 
-    var host_y = try context.refVariable(z).asUntagged(f32).data.toHost(allocator, context.stream);
+    var host_y = try z.dataToHost(f32);
     defer host_y.deinit(allocator);
 
-    var gx1 = try context.refVariable(x1).refGrad().?.asUntaggedConst(f32).data.toHost(allocator, context.stream);
+    var gx1 = try x1.gradToHost(f32);
     defer gx1.deinit(allocator);
 
-    var gx2 = try context.refVariable(x2).refGrad().?.asUntaggedConst(f32).data.toHost(allocator, context.stream);
+    var gx2 = try x2.gradToHost(f32);
     defer gx2.deinit(allocator);
+
+    try stream.sync();
 
     std.debug.print("{d}", .{host_y});
     std.debug.print("{d}", .{gx1});

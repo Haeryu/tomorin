@@ -281,68 +281,88 @@ pub const VarKey = struct {
     level: usize,
     index: usize,
     context: *Context,
+
+    pub fn ref(self: *VarKey) *TaggedVar {
+        return self.context.refVariable(self.*);
+    }
+
+    pub fn refConst(self: *const VarKey) *const TaggedVar {
+        return self.context.refVariableConst(self.*);
+    }
+
+    pub fn dataToHost(self: *const VarKey, comptime T: type) !tomo.tensor.CPUTensor(T) {
+        return try self.refConst().asUntaggedConst(T).data.toHost(self.context.allocator, self.context.stream);
+    }
+
+    pub fn gradToHost(self: *const VarKey, comptime T: type) !tomo.tensor.CPUTensor(T) {
+        return try self.refConst().refGradConst().?.asUntaggedConst(T).data.toHost(self.context.allocator, self.context.stream);
+    }
+
+    pub fn release(self: VarKey) void {
+        self.context.releaseVariable(self);
+    }
 };
 
-pub fn VarKeyTyped(comptime T: type) type {
-    return struct {
-        varkey: VarKey,
+// pub fn VarKeyTyped(comptime T: type) type {
+//     return struct {
+//         varkey: VarKey,
 
-        const Self = @This();
+//         const Self = @This();
 
-        pub fn neg(self: Self) !Self {
-            return Self{ .varkey = try function.neg(T, self.varkey) };
-        }
+//         pub fn neg(self: Self) !Self {
+//             return Self{ .varkey = try function.neg(T, self.varkey) };
+//         }
 
-        pub fn square(self: Self) !Self {
-            return Self{ .varkey = try function.square(T, self.varkey) };
-        }
+//         pub fn square(self: Self) !Self {
+//             return Self{ .varkey = try function.square(T, self.varkey) };
+//         }
 
-        pub fn exp(self: Self) !Self {
-            return Self{ .varkey = try function.exp(T, self.varkey) };
-        }
+//         pub fn exp(self: Self) !Self {
+//             return Self{ .varkey = try function.exp(T, self.varkey) };
+//         }
 
-        //
+//         //
 
-        pub fn shift(self: Self, scalar: T) !Self {
-            return Self{ .varkey = try function.shift(T, self.varkey, scalar) };
-        }
+//         pub fn shift(self: Self, scalar: T) !Self {
+//             return Self{ .varkey = try function.shift(T, self.varkey, scalar) };
+//         }
 
-        pub fn scale(self: Self, scalar: T) !Self {
-            return Self{ .varkey = try function.scale(T, self.varkey, scalar) };
-        }
+//         pub fn scale(self: Self, scalar: T) !Self {
+//             return Self{ .varkey = try function.scale(T, self.varkey, scalar) };
+//         }
 
-        pub fn powf(self: Self, scalar: T) !Self {
-            return Self{ .varkey = try function.powf(T, self.varkey, scalar) };
-        }
+//         pub fn powf(self: Self, scalar: T) !Self {
+//             return Self{ .varkey = try function.powf(T, self.varkey, scalar) };
+//         }
 
-        pub fn pow(self: Self, scalar: i32) !Self {
-            return Self{ .varkey = try function.pow(T, self.varkey, scalar) };
-        }
+//         pub fn pow(self: Self, scalar: i32) !Self {
+//             return Self{ .varkey = try function.pow(T, self.varkey, scalar) };
+//         }
 
-        //
-        pub fn scaleShift(self: Self, scal: T, shif: T) !Self {
-            return Self{ .varkey = try function.scaleShift(T, self.varkey, scal, shif) };
-        }
+//         //
+//         pub fn scaleShift(self: Self, scal: T, shif: T) !Self {
+//             return Self{ .varkey = try function.scaleShift(T, self.varkey, scal, shif) };
+//         }
 
-        //
+//         //
 
-        pub fn add(self: Self, other: Self) !Self {
-            return Self{ .varkey = try function.add(T, self.varkey, other) };
-        }
+//         pub fn add(self: Self, other: Self) !Self {
+//             return Self{ .varkey = try function.add(T, self.varkey, other) };
+//         }
 
-        pub fn sub(self: Self, other: Self) !Self {
-            return Self{ .varkey = try function.sub(T, self.varkey, other) };
-        }
+//         pub fn sub(self: Self, other: Self) !Self {
+//             return Self{ .varkey = try function.sub(T, self.varkey, other) };
+//         }
 
-        pub fn mul(self: Self, other: Self) !Self {
-            return Self{ .varkey = try function.mul(T, self.varkey, other) };
-        }
+//         pub fn mul(self: Self, other: Self) !Self {
+//             return Self{ .varkey = try function.mul(T, self.varkey, other) };
+//         }
 
-        pub fn div(self: Self, other: Self) !Self {
-            return Self{ .varkey = try function.div(T, self.varkey, other) };
-        }
-    };
-}
+//         pub fn div(self: Self, other: Self) !Self {
+//             return Self{ .varkey = try function.div(T, self.varkey, other) };
+//         }
+//     };
+// }
 
 pub const FuncKey = struct {
     level: usize,
