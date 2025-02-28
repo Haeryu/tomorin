@@ -40,8 +40,8 @@ pub fn LevelStack(comptime T: type) type {
             return &self.levels.items[self.levels.items.len - 1];
         }
 
-        pub fn getTopLevelTopItemConst(self: *Self) *T {
-            const top_level = self.getTopLevel();
+        pub fn getTopLevelTopItemConst(self: *const Self) *const T {
+            const top_level = self.getTopLevelConst();
             return &top_level.items[top_level.items.len - 1];
         }
 

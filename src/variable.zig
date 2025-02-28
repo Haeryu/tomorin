@@ -7,6 +7,8 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
+const VarKey = @import("context.zig").VarKey;
+const FuncKey = @import("context.zig").FuncKey;
 
 const Function = @import("function.zig").Function;
 
@@ -15,16 +17,22 @@ const Function = @import("function.zig").Function;
 pub fn Variable(comptime T: type) type {
     return struct {
         data: GPUTensor(T),
+        name: ?[]const u8 = null,
         context: *Context,
-        name: ?[]u8 = null,
-        level: usize = 0,
-        grad_index: ?usize = null,
+        generation: usize = 0,
+        grad: ?VarKey = null,
+        creator: ?FuncKey = null,
 
         const Self = @This();
 
         pub fn deinit(self: *Self) void {
             self.data.deinitAsync(self.context.stream);
             //self.creator_index = null;
+        }
+
+        pub fn setCreator(self: *Self, creator: FuncKey, creator_generation: usize) void {
+            self.creator = creator;
+            self.generation = creator_generation + 1;
         }
     };
 }
@@ -94,6 +102,33 @@ pub const PTaggedVar = union(enum) {
             f16 => self.f16,
             f32 => self.f32,
             f64 => self.f64,
+            else => unreachable,
+        };
+    }
+
+    pub fn asUntaggedConst(self: *const PTaggedVar, comptime T: type) *const Variable(T) {
+        return switch (T) {
+            BF16 => self.bf16,
+            f16 => self.f16,
+            f32 => self.f32,
+            f64 => self.f64,
+            else => unreachable,
+        };
+    }
+};
+
+pub const PTaggedVarConst = union(enum) {
+    bf16: *const Variable(BF16),
+    f16: *const Variable(f16),
+    f32: *const Variable(f32),
+    f64: *const Variable(f64),
+
+    pub fn init(comptime T: type, variable: *const Variable(T)) PTaggedVarConst {
+        return switch (T) {
+            BF16 => .{ .bf16 = variable },
+            f16 => .{ .f16 = variable },
+            f32 => .{ .f32 = variable },
+            f64 => .{ .f64 = variable },
             else => unreachable,
         };
     }

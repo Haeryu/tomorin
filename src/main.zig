@@ -25,15 +25,11 @@ pub fn main() !void {
     errdefer v1.deinitAsync(&stream);
     try v1.fill(2.0, &stream);
 
-    const x1 = tomorin.variable.Variable(f32){
-        .data = v1,
-        .level = 0,
-        .context = &context,
-    };
+    const x1 = try context.makeVariable(f32, v1, "x1");
 
-    const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, &x1)));
+    const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, x1, &context), &context), &context);
 
-    var v_host = try y.data.toHost(allocator, &stream);
+    var v_host = try context.getVariable(y).asUntagged(f32).data.toHost(allocator, &stream);
     defer v_host.deinit(allocator);
 
     std.debug.print("{d}", .{v_host});

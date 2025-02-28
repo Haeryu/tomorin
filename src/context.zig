@@ -1,11 +1,14 @@
 const std = @import("std");
 const tomo = @import("tomo");
 
+const GPUTensor = tomo.tensor.GPUTensor;
+
 const Stream = tomo.stream.Stream;
 const CudaContext = tomo.cuda_context.CudaContext;
 const LevelStack = @import("stack.zig").LevelStack;
 const Function = @import("function.zig").Function;
 const TaggedVar = @import("variable.zig").TaggedVar;
+const Variable = @import("variable.zig").Variable;
 
 pub const Context = struct {
     cuda_context: *const CudaContext,
@@ -86,4 +89,61 @@ pub const Context = struct {
     pub fn pushFunctionAtCurrentLevelTop(self: *Context, function: Function) !void {
         return self.function_level_stack.pushAtTopLevel(function);
     }
+
+    pub fn makeVariable(
+        self: *Context,
+        comptime T: type,
+        data: GPUTensor(T),
+        name: ?[]const u8,
+    ) !VarKey {
+        const variable: Variable(T) = .{
+            .data = data,
+            .name = name,
+            .context = self,
+        };
+
+        const tagged = TaggedVar.init(T, variable);
+
+        try self.pushTaggedVarAtCurrentLevelTop(tagged);
+
+        return .{
+            .level = self.getCurrentLevel(),
+            .index = self.getCurrentLevelTopTaggedVarIndex(),
+        };
+    }
+
+    pub fn registerFunction(self: *Context, function: Function) !FuncKey {
+        try self.pushFunctionAtCurrentLevelTop(function);
+
+        return .{
+            .level = self.getCurrentLevel(),
+            .index = self.getCurrentLevelTopFunctionIndex(),
+        };
+    }
+
+    pub fn getVariable(self: *Context, key: VarKey) *TaggedVar {
+        return &self.tagged_var_level_stack.levels.items[key.level].items[key.index];
+    }
+
+    pub fn getVariableConst(self: *Context, key: VarKey) *const TaggedVar {
+        return &self.tagged_var_level_stack.levels.items[key.level].items[key.index];
+    }
+
+    pub fn getFunction(self: *Context, key: FuncKey) *Function {
+        return &self.function_level_stack.levels.items[key.level].items[key.index];
+    }
+
+    pub fn getFunctionConst(self: *Context, key: FuncKey) *const Function {
+        return &self.function_level_stack.levels.items[key.level].items[key.index];
+    }
+};
+
+pub const VarKey = struct {
+    level: usize,
+    index: usize,
+};
+
+pub const FuncKey = struct {
+    level: usize,
+    index: usize,
 };
