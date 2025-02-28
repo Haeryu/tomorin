@@ -98,12 +98,12 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
 
-            if (in.creator == null) return;
-
-            const in_creator = self.base.context.getFunction(in.creator.?);
-            if (!seen_set.contains(in_creator)) {
-                try seen_set.put(in_creator, {});
-                try queue.add(in_creator);
+            if (in.creator) |creator| {
+                const in_creator = self.base.context.getFunction(creator);
+                if (!seen_set.contains(in_creator)) {
+                    try seen_set.put(in_creator, {});
+                    try queue.add(in_creator);
+                }
             }
         }
     };

@@ -17,6 +17,7 @@ const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 
 const neg = @import("function1in1out.zig").neg;
+const pow = @import("function1scalar1in1out.zig").pow;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -90,6 +91,7 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
             const in1 = self.base.context.getVariable(self.in1.?).asUntagged(Self.In1);
             const in2 = self.base.context.getVariable(self.in2.?).asUntagged(Self.In2);
+
             if (in1.grad) |in1_grad| {
                 in1.grad = try add(Self.Out, in1_grad, gx1, self.base.context);
             } else {
@@ -104,6 +106,7 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+
             const in1 = self.base.context.getVariable(self.in1.?).asUntagged(Self.In1);
 
             if (in1.creator) |creator1| {
@@ -265,4 +268,48 @@ pub fn mul(
     context: *Context,
 ) !VarKey {
     return try makefunc(Mul(T), x1, x2, context);
+}
+
+pub fn Div(comptime T: type) type {
+    return struct {
+        in1: ?VarKey,
+        in2: ?VarKey,
+        out: ?VarKey,
+        base: FunctionBase,
+
+        const In1 = T;
+        const In2 = T;
+        const Out = T;
+
+        pub usingnamespace FuncDecorator2in1out(Self);
+
+        const Self = Div(T);
+
+        pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            var y = try x1.cloneAsync(self.base.context.stream);
+            errdefer y.deinitAsync(self.base.context.stream);
+
+            try y.divide(x2, self.base.context.stream);
+
+            return y;
+        }
+
+        pub fn backward(self: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
+            const gx0 = try div(T, gy, self.in1.?, self.base.context);
+            const x1_sq = try pow(T, self.in1.?, 2, self.base.context);
+            const minus_x0 = try neg(T, self.in1.?, self.base.context);
+            const gx1 = try mul(T, gy, try div(T, minus_x0, x1_sq, self.base.context), self.base.context);
+
+            return .{ gx0, gx1 };
+        }
+    };
+}
+
+pub fn div(
+    comptime T: type,
+    x1: VarKey,
+    x2: VarKey,
+    context: *Context,
+) !VarKey {
+    return try makefunc(Div(T), x1, x2, context);
 }

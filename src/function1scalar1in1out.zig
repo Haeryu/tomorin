@@ -7,130 +7,105 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
+const VarKey = @import("context.zig").VarKey;
+const FuncKey = @import("context.zig").FuncKey;
 
-const PVariable = @import("variable.zig").PVariable;
-const PVarTagged = @import("variable.zig").PTaggedVar;
+const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
-const PVariableWeak = @import("variable.zig").PVariableWeak;
 
-const PFunction = @import("function.zig").PFunction;
 const Function = @import("function.zig").Function;
+const FunctionBase = @import("function.zig").FunctionBase;
 
 const add = @import("function2in1out.zig").add;
 const mul = @import("function2in1out.zig").mul;
 
-pub fn FuncDecorator1scalar1in1out(comptime Self: type) type {
+pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     return struct {
-        pub fn create(scalar: Self.Scalar, context: *const Context) !PFunction {
-            const self = try context.function_allocator.create(Self);
-            errdefer context.function_allocator.destroy(self);
+        pub fn create(context: *Context, scalar: Self.Scalar) !FuncKey {
+            const self = try context.allocator.create(Self);
+            errdefer context.allocator.destroy(self);
 
-            self.* = .{
-                .in = null,
-                .out = null,
-                .scalar = scalar,
-                .context = context,
-            };
-
-            const function: Function = .{
+            const self_key = try context.registerFunction(.{
                 .ptr = self,
                 .vtable = &.{
                     .forward = &forwardDecorated,
                     .backward = &backwardDecorated,
                     .destroy = &destroy,
-                    .add_inputs_creators = &addInputsCreators,
+                    .get_generation = &getGeneration,
+                    .enqueue = &enqueue,
                 },
-                .generation = 0,
+            });
+
+            self.* = .{
+                .in = null,
+                .out = null,
+                .scalar = scalar,
+                .base = .{
+                    .self_key = self_key,
+                    .context = context,
+                },
             };
 
-            var pfn = try Rc(Function, Function.Destructor).create(
-                context.function_allocator,
-                function,
-                .{},
-            );
-            defer pfn.release(context.function_allocator);
-
-            return .{
-                .pfn = pfn.move(),
-            };
+            return self_key;
         }
 
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            if (self.in) |*in| {
-                in.release(self.context.variable_allocator);
-                self.in = null;
-            }
-            if (self.out) |out| {
-                var outmut = out;
-                outmut.release(self.context.variable_allocator);
-                self.out = null;
-            }
-            self.context.function_allocator.destroy(self);
+            self.base.context.allocator.destroy(self);
         }
 
-        pub fn forwardDecorated(
-            ctx: *anyopaque,
-            pcreator: PFunction,
-            pxs_tagged: []PVarTagged,
-        ) ![Function.max_args_out]?PVarTagged {
+        pub fn getGeneration(ctx: *anyopaque) usize {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            std.debug.assert(self.in == null);
-            self.in = pxs_tagged[0].untagMove(Self.In);
-            std.debug.assert(self.context == self.in.?.get().?.context);
+            return self.base.generation;
+        }
 
-            var y = try self.forward(&self.in.?.get().?.data);
-            defer y.deinitAsync(self.context.stream);
+        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey) ![]const VarKey {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.in = args[0];
 
-            var py = try Variable(Self.Out).create(
-                y.move(),
-                null,
-                self.context,
+            const in = self.base.context.getVariable(args[0]).asUntaggedConst(Self.In);
+
+            var y = try self.forward(&in.data);
+            errdefer y.deinitAsync(self.base.context.stream);
+
+            const var_y = try self.base.context.createVariable(Self.Out, y, null);
+            self.out = var_y;
+
+            self.base.generation = in.generation;
+            self.base.context.getVariable(var_y).asUntagged(Self.Out).setCreator(
+                self.base.self_key,
+                self.base.generation,
             );
-            defer py.release(self.context.variable_allocator);
 
-            py.get().?.setCreator(pcreator.move());
-
-            self.out = py.downgrade();
-
-            return .{PVarTagged.init(Self.Out, py.move())} ++ .{null} ** (Function.max_args_out - 1);
+            return &.{var_y};
         }
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            var pgy = self.out.?.upgrade().?;
-            defer {
-                if (!self.context.enable_backprop_graph) {
-                    pgy.get().?.cleargrad();
-                }
-                pgy.release(self.context.variable_allocator);
-            }
 
-            var gx = try self.backward(pgy.get().?.grad.?.clone());
-            defer gx.release(self.context.variable_allocator);
+            const out = self.base.context.getVariable(self.out.?).asUntaggedConst(Self.Out);
 
-            if (self.in.?.get().?.grad) |*grad| {
-                //var mutgrad = grad;
-                var new_grad = try add(Self.In, grad.move(), gx.move(), self.context);
-                defer new_grad.release(self.context.variable_allocator);
+            const gx = try self.backward(out.grad.?);
 
-                self.in.?.get().?.grad = new_grad.move();
+            const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
+
+            if (in.grad) |in_grad| {
+                in.grad = try add(Self.Out, in_grad, gx, self.base.context);
             } else {
-                self.in.?.get().?.grad = gx.move();
+                in.grad = gx;
             }
         }
 
-        pub fn addInputsCreators(
-            ctx: *anyopaque,
-            queue: *PFunction.Queue,
-            seen_set: *std.AutoHashMap(*const Function, void),
-        ) !void {
+        pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            if (self.in.?.getConst().?.creator) |creator| {
-                if (!seen_set.contains(creator.getConst().?)) {
-                    var mut_creator = creator;
-                    try queue.add(mut_creator.get().?);
-                    try seen_set.put(creator.getConst().?, {});
+
+            const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
+
+            if (in.creator) |creator| {
+                const in_creator = self.base.context.getFunction(creator);
+                if (!seen_set.contains(in_creator)) {
+                    try seen_set.put(in_creator, {});
+                    try queue.add(in_creator);
                 }
             }
         }
@@ -139,111 +114,122 @@ pub fn FuncDecorator1scalar1in1out(comptime Self: type) type {
 
 fn makefunc(
     comptime F: type,
-    x: PVariable(F.In),
+    x: VarKey,
     scalar: F.Scalar,
-    context: *const Context,
-) !PVariable(F.Out) {
-    var mutx = x;
+    context: *Context,
+) !VarKey {
+    const funckey = try F.create(context, scalar);
 
-    var self = try F.create(scalar, context);
-    errdefer self.release(context.function_allocator);
-
-    var tagged = [1]PVarTagged{PVarTagged.init(F.In, mutx.move())};
-
-    var y = (try self.forward(&tagged))[0].?;
-    defer y.release(context.variable_allocator);
-
-    return y.untagMove(F.Out);
+    return (try context.getFunction(funckey).forward(&.{x}))[0];
 }
 
 pub fn Scale(comptime T: type) type {
     return struct {
-        in: ?PVariable(T) = null,
-        out: ?PVariableWeak(T) = null,
+        in: ?VarKey,
+        out: ?VarKey,
         scalar: T,
-        context: *const Context,
+        base: FunctionBase,
+
+        const Scalar = T;
         const In = T;
         const Out = T;
-        const Scalar = T;
 
-        pub usingnamespace FuncDecorator1scalar1in1out(Scale(T));
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
         const Self = Scale(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            var y = try x.cloneAsync(self.context.stream);
-            return try y.scale(self.scalar, self.context.cuda_context, self.context.stream);
+            return try x.scale(self.scalar, self.base.context.cuda_context, self.base.context.stream);
         }
 
-        pub fn backward(
-            self: *Self,
-            gy: PVariable(T),
-        ) !PVariable(T) {
-            var mutgy = gy;
-            return try scale(T, mutgy.move(), self.scalar, self.context);
+        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+            return try scale(T, gy, self.scalar, self.base.context);
         }
     };
 }
 
 pub fn scale(
     comptime T: type,
-    x: PVariable(T),
+    x: VarKey,
     scalar: T,
-    context: *const Context,
-) !PVariable(T) {
-    var mutx = x;
-    return try makefunc(Scale(T), mutx.move(), scalar, context);
+    context: *Context,
+) !VarKey {
+    return try makefunc(Scale(T), x, scalar, context);
+}
+
+pub fn Powf(comptime T: type) type {
+    return struct {
+        in: ?VarKey,
+        out: ?VarKey,
+        scalar: T,
+        base: FunctionBase,
+
+        const Scalar = T;
+        const In = T;
+        const Out = T;
+
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
+
+        const Self = Powf(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            var y = try x.cloneAsync(self.base.context.stream);
+            errdefer y.deinitAsync(self.base.context.stream);
+            return try y.powf(self.scalar, self.base.context.cuda_context, self.base.context.stream);
+        }
+
+        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+            const x_cmin1 = try powf(T, gy, self.scalar - 1.0, self.base.context);
+            const c_x_cmin1 = try scale(T, x_cmin1, self.scalar, self.base.context);
+            return try mul(T, c_x_cmin1, gy, self.base.context);
+        }
+    };
+}
+
+pub fn powf(
+    comptime T: type,
+    x: VarKey,
+    scalar: T,
+    context: *Context,
+) !VarKey {
+    return try makefunc(Powf(T), x, scalar, context);
 }
 
 pub fn Pow(comptime T: type) type {
     return struct {
-        in: ?PVariable(T) = null,
-        out: ?PVariableWeak(T) = null,
-        scalar: T,
-        context: *const Context,
+        in: ?VarKey,
+        out: ?VarKey,
+        scalar: i32,
+        base: FunctionBase,
+
+        const Scalar = i32;
         const In = T;
         const Out = T;
-        const Scalar = T;
 
-        pub usingnamespace FuncDecorator1scalar1in1out(Pow(T));
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
         const Self = Pow(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            var y = try x.cloneAsync(self.context.stream);
-            defer y.deinitAsync(self.context.stream);
-
-            try y.powf(self.scalar, self.context.stream);
-
-            return y.move();
+            var y = try x.cloneAsync(self.base.context.stream);
+            errdefer y.deinitAsync(self.base.context.stream);
+            try y.pow(self.scalar, self.base.context.stream);
+            return y;
         }
 
-        pub fn backward(
-            self: *Self,
-            gy: PVariable(T),
-        ) !PVariable(T) {
-            var mutgy = gy;
-
-            var x = self.in.?.clone();
-            defer x.release(self.context.variable_allocator);
-
-            var cx = try scale(T, x.move(), self.scalar, self.context);
-            defer cx.release(self.context.variable_allocator);
-
-            var cx_xminus1 = try pow(T, cx.move(), self.scalar - 1.0, self.context);
-            defer cx_xminus1.release(self.context.variable_allocator);
-
-            return try mul(T, cx_xminus1.move(), mutgy.move(), self.context);
+        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+            const x_cmin1 = try pow(T, gy, self.scalar, self.base.context);
+            const c_x_cmin1 = try scale(T, x_cmin1, @floatFromInt(self.scalar), self.base.context);
+            return try mul(T, c_x_cmin1, gy, self.base.context);
         }
     };
 }
 
 pub fn pow(
     comptime T: type,
-    x: PVariable(T),
-    scalar: T,
-    context: *const Context,
-) !PVariable(T) {
-    var mutx = x;
-    return try makefunc(Pow(T), mutx.move(), scalar, context);
+    x: VarKey,
+    scalar: i32,
+    context: *Context,
+) !VarKey {
+    return try makefunc(Pow(T), x, scalar, context);
 }
