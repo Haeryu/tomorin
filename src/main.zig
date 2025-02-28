@@ -26,8 +26,9 @@ pub fn main() !void {
     const x1 = try context.createVariable(f32, v1, "x1");
     const px1 = context.getVariable(x1).asUntagged(f32);
 
-    const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, x1, &context), &context), &context);
+    // const y = try tomorin.function.neg(f32, try tomorin.function.neg(f32, try tomorin.function.neg(f32, x1, &context), &context), &context);
     //const y = try tomorin.function.neg(f32, x1, &context);
+    const y = try tomorin.function.add(f32, x1, x1, &context);
 
     try stream.sync();
     try context.backward(f32, y);

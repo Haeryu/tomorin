@@ -7,160 +7,119 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
+const VarKey = @import("context.zig").VarKey;
+const FuncKey = @import("context.zig").FuncKey;
 
-const PVariable = @import("variable.zig").PVariable;
-const PVarTagged = @import("variable.zig").PTaggedVar;
+const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
-const PVariableWeak = @import("variable.zig").PVariableWeak;
 
-const PFunction = @import("function.zig").PFunction;
 const Function = @import("function.zig").Function;
-
-// const clone = @import("function1in2out.zig").clone;
-const neg = @import("function1in1out.zig").neg;
+const FunctionBase = @import("function.zig").FunctionBase;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
-        pub fn create(context: *const Context) !PFunction {
-            const self = try context.function_allocator.create(Self);
-            errdefer context.function_allocator.destroy(self);
+        pub fn create(context: *Context) !FuncKey {
+            const self = try context.allocator.create(Self);
+            errdefer context.allocator.destroy(self);
 
-            self.* = .{
-                .in1 = null,
-                .in2 = null,
-                .out = null,
-                .context = context,
-            };
-
-            const function: Function = .{
+            const self_key = try context.registerFunction(.{
                 .ptr = self,
                 .vtable = &.{
                     .forward = &forwardDecorated,
                     .backward = &backwardDecorated,
                     .destroy = &destroy,
-                    .add_inputs_creators = &addInputsCreators,
+                    .get_generation = &getGeneration,
+                    .enqueue = &enqueue,
                 },
-                .generation = 0,
+            });
+
+            self.* = .{
+                .in1 = null,
+                .in2 = null,
+                .out = null,
+                .base = .{
+                    .self_key = self_key,
+                    .context = context,
+                },
             };
 
-            var pfn = try Rc(Function, Function.Destructor).create(
-                context.function_allocator,
-                function,
-                .{},
-            );
-            defer pfn.release(context.function_allocator);
-
-            return .{
-                .pfn = pfn.move(),
-            };
+            return self_key;
         }
 
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-
-            if (self.in1) |*in1| {
-                in1.release(self.context.variable_allocator);
-                self.in1 = null;
-            }
-            if (self.in2) |*in2| {
-                in2.release(self.context.variable_allocator);
-                self.in2 = null;
-            }
-            if (self.out) |out| {
-                var outmut = out;
-                outmut.release(self.context.variable_allocator);
-                self.out = null;
-            }
-
-            self.context.function_allocator.destroy(self);
+            self.base.context.allocator.destroy(self);
         }
 
-        pub fn forwardDecorated(
-            ctx: *anyopaque,
-            pcreator: PFunction,
-            pxs_tagged: []PVarTagged,
-        ) ![Function.max_args_out]?PVarTagged {
+        pub fn getGeneration(ctx: *anyopaque) usize {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            std.debug.assert(self.in1 == null);
-            std.debug.assert(self.in2 == null);
+            return self.base.generation;
+        }
 
-            self.in1 = pxs_tagged[0].untagMove(Self.In1);
-            self.in2 = pxs_tagged[1].untagMove(Self.In2);
+        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey) ![]const VarKey {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.in1 = args[0];
+            self.in2 = args[1];
 
-            std.debug.assert(self.in1.?.get().?.context == self.context);
-            std.debug.assert(self.in2.?.get().?.context == self.context);
+            const in1 = self.base.context.getVariable(args[0]).asUntaggedConst(Self.In1);
+            const in2 = self.base.context.getVariable(args[1]).asUntaggedConst(Self.In2);
 
-            var y = try self.forward(&self.in1.?.get().?.data, &self.in2.?.get().?.data);
-            errdefer y.deinitAsync(self.context.stream);
+            var y = try self.forward(&in1.data, &in2.data);
+            errdefer y.deinitAsync(self.base.context.stream);
 
-            var py = try Variable(Self.Out).create(
-                y,
-                null,
-                self.context,
+            const var_y = try self.base.context.createVariable(Self.Out, y, null);
+            self.out = var_y;
+
+            self.base.generation = @max(in1.generation, in2.generation);
+            self.base.context.getVariable(var_y).asUntagged(Self.Out).setCreator(
+                self.base.self_key,
+                self.base.generation,
             );
-            defer py.release(self.context.variable_allocator);
 
-            py.get().?.setCreator(pcreator.move());
-
-            self.out = py.downgrade();
-
-            return .{PVarTagged.init(Self.Out, py.move())} ++ .{null} ** (Function.max_args_out - 1);
+            return &.{var_y};
         }
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            var pgy = self.out.?.upgrade().?;
-            defer {
-                if (!self.context.enable_backprop_graph) {
-                    pgy.get().?.cleargrad();
-                }
-                pgy.release(self.context.variable_allocator);
-            }
 
-            var gx1, var gx2 = try self.backward(pgy.get().?.grad.?.clone());
-            defer gx1.release(self.context.variable_allocator);
-            defer gx2.release(self.context.variable_allocator);
+            const out = self.base.context.getVariable(self.out.?).asUntaggedConst(Self.Out);
 
-            if (self.in1.?.get().?.grad) |*grad1| {
-                //var mutgrad = grad;
-                var new_grad = try add(Self.In1, grad1.move(), gx1.move(), self.context);
-                defer new_grad.release(self.context.function_allocator);
+            const gx1, const gx2 = try self.backward(out.grad.?);
 
-                self.in1.?.get().?.grad = new_grad.move();
+            const in1 = self.base.context.getVariable(self.in1.?).asUntagged(Self.In1);
+            const in2 = self.base.context.getVariable(self.in2.?).asUntagged(Self.In2);
+            if (in1.grad) |in1_grad| {
+                in1.grad = try add(Self.Out, in1_grad, gx1, self.base.context);
             } else {
-                self.in1.?.get().?.grad = gx1.move();
+                in1.grad = gx1;
             }
-
-            if (self.in2.?.get().?.grad) |*grad2| {
-                //var mutgrad = grad;
-                var new_grad = try add(Self.In2, grad2.move(), gx2.move(), self.context);
-                defer new_grad.release(self.context.function_allocator);
-
-                self.in2.?.get().?.grad = new_grad.move();
+            if (in2.grad) |in2_grad| {
+                in2.grad = try add(Self.Out, in2_grad, gx2, self.base.context);
             } else {
-                self.in2.?.get().?.grad = gx2.move();
+                in2.grad = gx2;
             }
         }
 
-        pub fn addInputsCreators(
-            ctx: *anyopaque,
-            queue: *PFunction.Queue,
-            seen_set: *std.AutoHashMap(*const Function, void),
-        ) !void {
+        pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            if (self.in1.?.getConst().?.creator) |creator1| {
-                if (!seen_set.contains(creator1.getConst().?)) {
-                    var mut_creator1 = creator1;
-                    try queue.add(mut_creator1.get().?);
-                    try seen_set.put(creator1.getConst().?, {});
-                }
+            const in1 = self.base.context.getVariable(self.in1.?).asUntagged(Self.In1);
+
+            if (in1.creator == null) return;
+
+            const in1_creator = self.base.context.getFunction(in1.creator.?);
+            if (!seen_set.contains(in1_creator)) {
+                try seen_set.put(in1_creator, {});
+                try queue.add(in1_creator);
             }
-            if (self.in2.?.getConst().?.creator) |creator2| {
-                if (!seen_set.contains(creator2.getConst().?)) {
-                    var mut_creator2 = creator2;
-                    try queue.add(mut_creator2.get().?);
-                    try seen_set.put(creator2.getConst().?, {});
-                }
+
+            const in2 = self.base.context.getVariable(self.in2.?).asUntagged(Self.In2);
+
+            if (in2.creator == null) return;
+
+            const in2_creator = self.base.context.getFunction(in2.creator.?);
+            if (!seen_set.contains(in2_creator)) {
+                try seen_set.put(in2_creator, {});
+                try queue.add(in2_creator);
             }
         }
     };
@@ -168,204 +127,56 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
 fn makefunc(
     comptime F: type,
-    x1: PVariable(F.In1),
-    x2: PVariable(F.In2),
-    context: *const Context,
-) !PVariable(F.Out) {
-    var mutx1 = x1;
-    var mutx2 = x2;
+    x1: VarKey,
+    x2: VarKey,
+    context: *Context,
+) !VarKey {
+    const funckey = try F.create(context);
 
-    var self = try F.create(context);
-    errdefer self.release(context.function_allocator);
-
-    var tagged = [2]PVarTagged{ PVarTagged.init(F.In1, mutx1.move()), PVarTagged.init(F.In2, mutx2.move()) };
-
-    var y = (try self.move().forward(&tagged))[0].?;
-    defer y.release(context.variable_allocator);
-
-    return y.untagMove(F.Out);
+    return (try context.getFunction(funckey).forward(&.{ x1, x2 }))[0];
 }
 
 pub fn Add(comptime T: type) type {
     return struct {
-        in1: ?PVariable(T) = null,
-        in2: ?PVariable(T) = null,
-        out: ?PVariableWeak(T) = null,
-        context: *const Context,
+        in1: ?VarKey,
+        in2: ?VarKey,
+        out: ?VarKey,
+        base: FunctionBase,
 
         const In1 = T;
         const In2 = T;
         const Out = T;
 
-        pub usingnamespace FuncDecorator2in1out(Self);
+        pub usingnamespace FuncDecorator2in1out(Add(T));
 
         const Self = Add(T);
 
-        pub fn forward(
-            self: *Self,
-            x1: *const GPUTensor(T),
-            x2: *const GPUTensor(T),
-        ) !GPUTensor(T) {
-            if (x1.ptr == x2.ptr) {
-                var new_x2 = try x2.cloneAsync(self.context.stream);
-                defer new_x2.deinitAsync(self.context.stream);
-                return try x1.add(&new_x2, self.context.cuda_context, self.context.stream);
+        pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            if (x1 == x2) {
+                var new_x1 = try x1.cloneAsync(self.base.context.stream);
+                defer new_x1.deinitAsync(self.base.context.stream);
+
+                const y = try new_x1.add(x2, self.base.context.cuda_context, self.base.context.stream);
+
+                return y;
             } else {
-                return try x1.add(x2, self.context.cuda_context, self.context.stream);
+                const y = try x1.add(x2, self.base.context.cuda_context, self.base.context.stream);
+
+                return y;
             }
         }
 
-        pub fn backward(
-            _: *Self,
-            gy: PVariable(T),
-        ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
-            var gymut = gy;
-            return .{ gymut.clone(), gymut.move() };
+        pub fn backward(_: *Self, gy: VarKey) !std.meta.Tuple(&.{ VarKey, VarKey }) {
+            return .{ gy, gy };
         }
     };
 }
 
 pub fn add(
     comptime T: type,
-    x1: PVariable(T),
-    x2: PVariable(T),
-    context: *const Context,
-) !PVariable(T) {
-    var mutx1 = x1;
-    var mutx2 = x2;
-    return try makefunc(Add(T), mutx1.move(), mutx2.move(), context);
-}
-
-pub fn Sub(comptime T: type) type {
-    return struct {
-        in1: ?PVariable(T) = null,
-        in2: ?PVariable(T) = null,
-        out: ?PVariableWeak(T) = null,
-        context: *const Context,
-        const In1 = T;
-        const In2 = T;
-        const Out = T;
-
-        pub usingnamespace FuncDecorator2in1out(Self);
-
-        const Self = Sub(T);
-
-        pub fn forward(
-            self: *Self,
-            x1: *const GPUTensor(T),
-            x2: *const GPUTensor(T),
-        ) !GPUTensor(T) {
-            if (x1.ptr == x2.ptr) {
-                var new_x2 = try x2.cloneAsync(self.context.stream);
-                defer new_x2.deinitAsync(self.context.stream);
-                return try x1.sub(&new_x2, self.context.cuda_context, self.context.stream);
-            } else {
-                return try x1.sub(x2, self.context.cuda_context, self.context.stream);
-            }
-        }
-
-        pub fn backward(
-            self: *Self,
-            gy: PVariable(T),
-        ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
-            var mutgy = gy;
-
-            var gy1 = mutgy.clone();
-            defer gy1.release(self.context.variable_allocator);
-            var gy2 = mutgy.move();
-            defer gy2.release(self.context.variable_allocator);
-
-            return .{ gy1.move(), try neg(T, gy2.move(), self.context) };
-        }
-    };
-}
-
-pub fn sub(
-    comptime T: type,
-    x1: PVariable(T),
-    x2: PVariable(T),
-    context: *const Context,
-) !PVariable(T) {
-    var mutx1 = x1;
-    var mutx2 = x2;
-    return try makefunc(Sub(T), mutx1.move(), mutx2.move(), context);
-}
-
-pub fn Mul(comptime T: type) type {
-    return struct {
-        in1: ?PVariable(T) = null,
-        in2: ?PVariable(T) = null,
-        out: ?PVariableWeak(T) = null,
-        context: *const Context,
-        const In1 = T;
-        const In2 = T;
-        const Out = T;
-
-        pub usingnamespace FuncDecorator2in1out(Self);
-
-        const Self = Mul(T);
-
-        pub fn forward(
-            self: *Self,
-            x1: *const GPUTensor(T),
-            x2: *const GPUTensor(T),
-        ) !GPUTensor(T) {
-            var y = try x1.cloneAsync(self.context.stream);
-            defer y.deinitAsync(self.context.stream);
-            try y.product(x2, self.context.stream);
-
-            return y.move();
-        }
-
-        pub fn backward(
-            self: *Self,
-            gy: PVariable(T),
-        ) !std.meta.Tuple(&.{ PVariable(T), PVariable(T) }) {
-            var x1 = try self.in1.?.getConst().?.data.cloneAsync(self.context.stream);
-            defer x1.deinitAsync(self.context.stream);
-
-            var x2 = try self.in2.?.getConst().?.data.cloneAsync(self.context.stream);
-            defer x2.deinitAsync(self.context.stream);
-
-            var v1 = try Variable(Self.In1).create(
-                x1.move(),
-                null,
-                self.context,
-            );
-            defer v1.release(self.context.variable_allocator);
-
-            var v2 = try Variable(Self.In2).create(
-                x2.move(),
-                null,
-                self.context,
-            );
-            defer v2.release(self.context.variable_allocator);
-
-            var mutgy = gy;
-
-            var gy1 = mutgy.clone();
-            defer gy1.release(self.context.variable_allocator);
-            var gy2 = mutgy.move();
-            defer gy2.release(self.context.variable_allocator);
-
-            var gx1 = try mul(T, gy1.clone(), v2.move(), self.context);
-            defer gx1.release(self.context.variable_allocator);
-
-            var gx2 = try mul(T, gy2.move(), v1.move(), self.context);
-            defer gx2.release(self.context.variable_allocator);
-
-            return .{ gx1.move(), gx2.move() };
-        }
-    };
-}
-
-pub fn mul(
-    comptime T: type,
-    x1: PVariable(T),
-    x2: PVariable(T),
-    context: *const Context,
-) !PVariable(T) {
-    var mutx1 = x1;
-    var mutx2 = x2;
-    return try makefunc(Mul(T), mutx1.move(), mutx2.move(), context);
+    x1: VarKey,
+    x2: VarKey,
+    context: *Context,
+) !VarKey {
+    return try makefunc(Add(T), x1, x2, context);
 }

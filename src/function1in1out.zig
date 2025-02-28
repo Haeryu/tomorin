@@ -11,7 +11,6 @@ const VarKey = @import("context.zig").VarKey;
 const FuncKey = @import("context.zig").FuncKey;
 
 const TaggedVar = @import("variable.zig").TaggedVar;
-const PTaggedVar = @import("variable.zig").PTaggedVar;
 const Variable = @import("variable.zig").Variable;
 
 const Function = @import("function.zig").Function;
@@ -87,7 +86,12 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             const gx = try self.backward(out.grad.?);
 
             const in = self.base.context.getVariable(self.in.?).asUntagged(Self.In);
-            in.grad = gx;
+
+            if (in.grad) |in_grad| {
+                in.grad = try add(Self.Out, in_grad, gx, self.base.context);
+            } else {
+                in.grad = gx;
+            }
         }
 
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
