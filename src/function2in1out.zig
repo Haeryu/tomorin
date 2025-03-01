@@ -34,6 +34,7 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                     .destroy = &destroy,
                     .get_generation = &getGeneration,
                     .enqueue = &enqueue,
+                    .get_dot_alloc = &getDotAlloc,
                 },
             });
 
@@ -163,6 +164,39 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                     try queue.add(in2_creator);
                 }
             }
+        }
+
+        pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const in1 = if (Self.owns_in1) try self.in1.?.ref().getDotAlloc() else "";
+            defer if (Self.owns_in1) self.base.self_key.context.allocator.free(in1) else {};
+            const in2 = if (Self.owns_in2) try self.in2.?.ref().getDotAlloc() else "";
+            defer if (Self.owns_in2) self.base.self_key.context.allocator.free(in2) else {};
+            const out = if (Self.owns_out) try self.out.?.ref().getDotAlloc() else "";
+            defer if (Self.owns_out) self.base.self_key.context.allocator.free(out) else {};
+
+            return try std.fmt.allocPrint(self.base.self_key.context.allocator,
+                \\{} [label="{s}", color=lightblue, style=filled, shape=box]
+                \\{} -> {}
+                \\{} -> {}
+                \\{} -> {}
+                \\{s}
+                \\{s}
+                \\{s}
+                \\
+            , .{
+                @intFromPtr(ctx),
+                @typeName(Self)[std.mem.indexOf(u8, @typeName(Self), ".").? + 1 ..],
+                @intFromPtr(self.in1.?.refConst()),
+                @intFromPtr(ctx),
+                @intFromPtr(self.in2.?.refConst()),
+                @intFromPtr(ctx),
+                @intFromPtr(ctx),
+                @intFromPtr(self.out.?.refConst()),
+                in1,
+                in2,
+                out,
+            });
         }
     };
 }

@@ -19,19 +19,22 @@ pub const Context = struct {
     compact_mode: bool = false,
     function_level_stack: LevelStack(Function),
     tagged_var_level_stack: LevelStack(TaggedVar),
-
+    verbose_dot: bool,
     const func_max_out = 3;
+
     pub fn init(
         allocator: std.mem.Allocator,
         cuda_context: *const CudaContext,
         stream: *const Stream,
         compact_mode: bool,
+        verbose_dot: bool,
     ) !Context {
         var self: Context = .{
             .allocator = allocator,
             .cuda_context = cuda_context,
             .stream = stream,
             .compact_mode = compact_mode,
+            .verbose_dot = verbose_dot,
             .function_level_stack = LevelStack(Function).init(allocator),
             .tagged_var_level_stack = LevelStack(TaggedVar).init(allocator),
         };
@@ -135,6 +138,14 @@ pub const Context = struct {
         return self.function_level_stack.getTopLevel();
     }
 
+    pub fn getLevelFunctions(self: *Context, level: usize) *std.ArrayList(Function) {
+        return self.function_level_stack.getLevel(level);
+    }
+
+    pub fn getLevelFunctionsConst(self: *const Context, level: usize) *const std.ArrayList(Function) {
+        return self.function_level_stack.getLevelConst(level);
+    }
+
     pub fn createVariable(
         self: *Context,
         comptime T: type,
@@ -214,9 +225,9 @@ pub const Context = struct {
         key: VarKey,
         grad_catch_vars: []const VarKey,
     ) !void {
-        if (key.level < self.getCurrentLevel()) {
-            return;
-        }
+        // if (key.level < self.getCurrentLevel()) {
+        //     return;
+        // }
 
         try self.makeNewLevel();
 
@@ -274,6 +285,36 @@ pub const Context = struct {
         }
 
         return count;
+    }
+
+    pub fn writeDot(self: *const Context, level: usize, writer: anytype) !void {
+        const level_vars = self.getLevelVariablesConst(level);
+        const level_funcs = self.getLevelFunctionsConst(level);
+
+        try writer.writeAll("digraph g {\n");
+
+        for (level_vars.items) |level_variable| {
+            const dot_var = try level_variable.getDotAlloc();
+            defer self.allocator.free(dot_var);
+
+            try writer.writeAll(dot_var);
+        }
+
+        for (level_funcs.items) |level_function| {
+            const dot_func = try level_function.getDotAlloc();
+            defer self.allocator.free(dot_func);
+
+            try writer.writeAll(dot_func);
+        }
+
+        try writer.writeAll("}\n");
+    }
+
+    pub fn saveDot(self: *const Context, level: usize, filename: []const u8) !void {
+        const file = try std.fs.cwd().createFile(filename, .{});
+        defer file.close();
+
+        try self.writeDot(level, file.writer());
     }
 };
 

@@ -12,8 +12,6 @@ const FuncKey = @import("context.zig").FuncKey;
 
 const Function = @import("function.zig").Function;
 
-// variable in stack -> owns tensor
-// variable out stack (userdata) -> don't own tensor
 pub fn Variable(comptime T: type) type {
     return struct {
         data: GPUTensor(T),
@@ -69,6 +67,35 @@ pub fn Variable(comptime T: type) type {
 
         pub fn isDataNull(self: *const Self) bool {
             return self.data.ptr == null;
+        }
+
+        pub fn clearGrad(self: *Self) void {
+            self.grad.?.release();
+            self.grad = null;
+        }
+
+        pub fn getDotAlloc(self: *const Self, type_tag: @typeInfo(TaggedVar).@"union".tag_type.?) ![]u8 {
+            const fmt = comptime "{} [label=\"{s}\", color=orange, style=filled]\n";
+            const name = self.name orelse "";
+
+            if (self.self_key.context.verbose_dot) {
+                const name_alloc = try std.fmt.allocPrint(self.self_key.context.allocator, "{s} {s}, shape: {any}", .{
+                    name,
+                    @tagName(type_tag),
+                    self.data.base.getShapeConst(),
+                });
+                defer self.self_key.context.allocator.free(name_alloc);
+
+                return try std.fmt.allocPrint(self.self_key.context.allocator, fmt, .{
+                    @intFromPtr(self.self_key.refConst()),
+                    name_alloc,
+                });
+            } else {
+                return try std.fmt.allocPrint(self.self_key.context.allocator, fmt, .{
+                    @intFromPtr(self.self_key.refConst()),
+                    name,
+                });
+            }
         }
     };
 }
@@ -184,6 +211,12 @@ pub const TaggedVar = union(enum) {
     pub fn isDataNull(self: *TaggedVar) bool {
         return switch (self.*) {
             inline else => |*v| v.isDataNull(),
+        };
+    }
+
+    pub fn getDotAlloc(self: *const TaggedVar) ![]u8 {
+        return switch (self.*) {
+            inline else => |*v, t| try v.getDotAlloc(t),
         };
     }
 };

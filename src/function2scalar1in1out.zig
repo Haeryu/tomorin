@@ -34,6 +34,7 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                     .destroy = &destroy,
                     .get_generation = &getGeneration,
                     .enqueue = &enqueue,
+                    .get_dot_alloc = &getDotAlloc,
                 },
             });
 
@@ -131,6 +132,55 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                     try queue.add(in_creator);
                 }
             }
+        }
+
+        pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const allocator = self.base.self_key.context.allocator;
+            const in = if (Self.owns_in) try self.in.?.ref().getDotAlloc() else "";
+            defer if (Self.owns_in) allocator.free(in) else {};
+            const out = if (Self.owns_out) try self.in.?.ref().getDotAlloc() else "";
+            defer if (Self.owns_in) allocator.free(out) else {};
+
+            const scalar1 = try std.fmt.allocPrint(allocator, "{} [label=\"{s}\", color=aquamarine, style=filled, shape=circle]", .{
+                @intFromPtr(&self.scalar1),
+                @typeName(Self.Scalar1),
+            });
+            defer allocator.free(scalar1);
+
+            const scalar2 = try std.fmt.allocPrint(allocator, "{} [label=\"{s}\", color=aquamarine, style=filled, shape=circle]", .{
+                @intFromPtr(&self.scalar2),
+                @typeName(Self.Scalar2),
+            });
+            defer allocator.free(scalar2);
+
+            return try std.fmt.allocPrint(allocator,
+                \\{} [label="{s}", color=lightblue, style=filled, shape=box]
+                \\{s}
+                \\{s}
+                \\{} -> {}
+                \\{} -> {}
+                \\{} -> {}
+                \\{} -> {}
+                \\{s}
+                \\{s}
+                \\
+            , .{
+                @intFromPtr(ctx),
+                @typeName(Self)[std.mem.indexOf(u8, @typeName(Self), ".").? + 1 ..],
+                scalar1,
+                scalar2,
+                @intFromPtr(&self.scalar1),
+                @intFromPtr(ctx),
+                @intFromPtr(&self.scalar2),
+                @intFromPtr(ctx),
+                @intFromPtr(self.in.?.refConst()),
+                @intFromPtr(ctx),
+                @intFromPtr(ctx),
+                @intFromPtr(self.out.?.refConst()),
+                in,
+                out,
+            });
         }
     };
 }

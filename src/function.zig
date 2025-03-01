@@ -42,6 +42,8 @@ pub const Function = struct {
         enqueue: *const fn (ctx: *anyopaque, queue: *Queue, seen_set: *SeenSet) anyerror!void,
 
         get_generation: *const fn (ctx: *anyopaque) usize,
+
+        get_dot_alloc: *const fn (ctx: *anyopaque) anyerror![]u8,
     };
 
     pub fn destroy(self: *Function) void {
@@ -62,6 +64,10 @@ pub const Function = struct {
 
     pub fn getGeneration(self: *Function) usize {
         return self.vtable.get_generation(self.ptr);
+    }
+
+    pub fn getDotAlloc(self: *const Function) ![]u8 {
+        return self.vtable.get_dot_alloc(self.ptr);
     }
 };
 
