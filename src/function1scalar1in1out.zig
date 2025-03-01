@@ -176,7 +176,7 @@ fn makefunc(comptime F: type, x: VarKey, scalar: F.Scalar) !VarKey {
     const funckey = try F.create(x.context, scalar);
 
     var out: [Function.max_out]?VarKey = .{null} ** Function.max_out;
-    try x.context.refFunction(funckey).forward(&.{x}, &out);
+    try x.context.refFunction(funckey).forward(&.{x}, out[0..1]);
 
     return out[0].?;
 }
@@ -262,7 +262,7 @@ pub fn Powf(comptime T: type) type {
         const In = T;
         const Out = T;
 
-        const owns_in = false;
+        const owns_in = true;
         const owns_out = false;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
@@ -277,7 +277,7 @@ pub fn Powf(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            const x_cmin1 = try powf(T, gy, self.scalar - 1.0);
+            const x_cmin1 = try powf(T, self.in.?, self.scalar - 1.0);
             const c_x_cmin1 = try scale(T, x_cmin1, self.scalar);
             return try mul(T, c_x_cmin1, gy);
         }
@@ -299,7 +299,7 @@ pub fn Pow(comptime T: type) type {
         const In = T;
         const Out = T;
 
-        const owns_in = false;
+        const owns_in = true;
         const owns_out = false;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
@@ -315,7 +315,7 @@ pub fn Pow(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            const x_cmin1 = try pow(T, gy, self.scalar);
+            const x_cmin1 = try pow(T, self.in.?, self.scalar - 1);
             const c_x_cmin1 = try scale(T, x_cmin1, @floatFromInt(self.scalar));
             return try mul(T, c_x_cmin1, gy);
         }

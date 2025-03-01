@@ -19,6 +19,7 @@ const FunctionBase = @import("function.zig").FunctionBase;
 const FuncDecorator1in1outBase = @import("function1in1out.zig").FuncDecorator1in1outBase;
 const add = @import("function2in1out.zig").add;
 const mul = @import("function2in1out.zig").mul;
+const scale = @import("function1scalar1in1out.zig").scale;
 
 pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
     return struct {
@@ -193,7 +194,7 @@ fn makefunc(
 ) !VarKey {
     const funckey = try F.create(x.context, scalar1, scalar2);
     var out: [Function.max_out]?VarKey = .{null} ** Function.max_out;
-    try x.context.refFunction(funckey).forward(&.{x}, &out);
+    try x.context.refFunction(funckey).forward(&.{x}, out[0..1]);
 
     return out[0];
 }
@@ -202,8 +203,8 @@ pub fn ScaleShift(comptime T: type) type {
     return struct {
         in: ?VarKey,
         out: ?VarKey,
-        scalar1: T,
-        scalar2: T,
+        scalar1: T, // scale
+        scalar2: T, // shift
         base: FunctionBase,
 
         const Scalar = T;
@@ -226,12 +227,12 @@ pub fn ScaleShift(comptime T: type) type {
             return y;
         }
 
-        pub fn backward(_: *Self, gy: VarKey) !VarKey {
-            return gy;
+        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+            return try scale(T, gy, self.scalar1);
         }
     };
 }
 
-pub fn scaleShift(comptime T: type, x: VarKey, scale: T, shift: T) !VarKey {
-    return try makefunc(ScaleShift(T), x, scale, shift);
+pub fn scaleShift(comptime T: type, x: VarKey, scal: T, shif: T) !VarKey {
+    return try makefunc(ScaleShift(T), x, scal, shif);
 }

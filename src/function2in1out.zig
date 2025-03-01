@@ -211,7 +211,7 @@ fn makefunc(
 
     var out: [Function.max_out]?VarKey = .{null} ** Function.max_out;
 
-    try x1.context.refFunction(funckey).forward(&.{ x1, x2 }, &out);
+    try x1.context.refFunction(funckey).forward(&.{ x1, x2 }, out[0..1]);
 
     return out[0].?;
 }

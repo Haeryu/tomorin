@@ -165,7 +165,7 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
 fn makefunc(comptime F: type, x: VarKey) !VarKey {
     const funckey = try F.create(x.context);
     var out: [Function.max_out]?VarKey = .{null} ** Function.max_out;
-    try x.context.refFunction(funckey).forward(&.{x}, &out);
+    try x.context.refFunction(funckey).forward(&.{x}, out[0..1]);
     return out[0].?;
 }
 
@@ -272,4 +272,70 @@ pub fn Exp(comptime T: type) type {
 
 pub fn exp(comptime T: type, x: VarKey) !VarKey {
     return try makefunc(Exp(T), x);
+}
+
+pub fn Sin(comptime T: type) type {
+    return struct {
+        in: ?VarKey,
+        out: ?VarKey,
+        base: FunctionBase,
+
+        const In = T;
+        const Out = T;
+
+        const owns_in = true;
+        const owns_out = false;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Sin(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.self_key.context;
+            var y = try x.cloneAsync(context.stream);
+            try y.sin(context.stream);
+            return y;
+        }
+
+        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+            return try mul(T, try cos(T, self.in.?), gy);
+        }
+    };
+}
+
+pub fn sin(comptime T: type, x: VarKey) !VarKey {
+    return try makefunc(Sin(T), x);
+}
+
+pub fn Cos(comptime T: type) type {
+    return struct {
+        in: ?VarKey,
+        out: ?VarKey,
+        base: FunctionBase,
+
+        const In = T;
+        const Out = T;
+
+        const owns_in = true;
+        const owns_out = false;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Cos(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.self_key.context;
+            var y = try x.cloneAsync(context.stream);
+            try y.cos(context.stream);
+            return y;
+        }
+
+        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+            return try mul(T, try sin(T, self.in.?), gy);
+        }
+    };
+}
+
+pub fn cos(comptime T: type, x: VarKey) !VarKey {
+    return try makefunc(Cos(T), x);
 }

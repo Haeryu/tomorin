@@ -74,6 +74,10 @@ pub fn Variable(comptime T: type) type {
             self.grad = null;
         }
 
+        pub fn setName(self: *Self, name: []const u8) void {
+            self.name = name;
+        }
+
         pub fn getDotAlloc(self: *const Self, type_tag: @typeInfo(TaggedVar).@"union".tag_type.?) ![]u8 {
             const fmt = comptime "{} [label=\"{s}\", color=orange, style=filled]\n";
             const name = self.name orelse "";
@@ -88,12 +92,12 @@ pub fn Variable(comptime T: type) type {
 
                 return try std.fmt.allocPrint(self.self_key.context.allocator, fmt, .{
                     @intFromPtr(self.self_key.refConst()),
-                    name_alloc,
+                    std.mem.trim(u8, name_alloc, " "),
                 });
             } else {
                 return try std.fmt.allocPrint(self.self_key.context.allocator, fmt, .{
                     @intFromPtr(self.self_key.refConst()),
-                    name,
+                    std.mem.trim(u8, name, " "),
                 });
             }
         }
@@ -218,5 +222,11 @@ pub const TaggedVar = union(enum) {
         return switch (self.*) {
             inline else => |*v, t| try v.getDotAlloc(t),
         };
+    }
+
+    pub fn setName(self: *TaggedVar, name: []const u8) void {
+        switch (self.*) {
+            inline else => |*v| v.setName(name),
+        }
     }
 };
