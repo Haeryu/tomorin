@@ -201,33 +201,12 @@ pub const Context = struct {
         return count;
     }
 
-    pub fn writeDot(self: *const Context, writer: anytype) !void {
+    pub fn createSnapShot(self: *const Context) SnapShot {
         std.debug.assert(!self.options.aggressive_release);
 
-        try writer.writeAll("digraph g {\n");
-
-        for (self.tagged_vars.datas.items) |variable| {
-            const dot_var = try variable.getDotAlloc();
-            defer self.allocator.free(dot_var);
-
-            try writer.writeAll(dot_var);
-        }
-
-        for (self.functions.items) |func| {
-            const dot_func = try func.getDotAlloc();
-            defer self.allocator.free(dot_func);
-
-            try writer.writeAll(dot_func);
-        }
-
-        try writer.writeAll("}\n");
-    }
-
-    pub fn saveDot(self: *const Context, filename: []const u8) !void {
-        const file = try std.fs.cwd().createFile(filename, .{});
-        defer file.close();
-
-        try self.writeDot(file.writer());
+        return .{
+            .context = self,
+        };
     }
 };
 
@@ -289,4 +268,61 @@ pub const FuncKey = struct {
     pub fn refConst(self: FuncKey) *const Function {
         return self.context.refFunctionConst(self);
     }
+};
+
+pub const SnapShot = struct {
+    start_var_idx: ?usize = null,
+    start_func_idx: ?usize = null,
+    end_var_idx: ?usize = null,
+    end_func_idx: ?usize = null,
+    context: *const Context,
+
+    pub fn shotStart(self: *SnapShot) void {
+        self.start_var_idx = self.context.tagged_vars.datas.items.len;
+        self.start_func_idx = self.context.functions.items.len;
+    }
+
+    pub fn shotEnd(self: *SnapShot) void {
+        self.end_var_idx = self.context.tagged_vars.datas.items.len;
+        self.end_func_idx = self.context.functions.items.len;
+    }
+
+    fn getVars(self: *SnapShot) []TaggedVar {
+        return self.context.tagged_vars.datas.items[self.start_var_idx.?..self.end_var_idx.?];
+    }
+
+    fn getFuncs(self: *SnapShot) []TaggedVar {
+        return self.context.functions.items[self.start_func_idx.?..self.end_func_idx.?];
+    }
+
+    pub fn writeDot(self: *const SnapShot, writer: anytype) !void {
+        std.debug.assert(!self.context.options.aggressive_release);
+
+        try writer.writeAll("digraph g {\n");
+
+        for (self.getVars()) |variable| {
+            const dot_var = try variable.getDotAlloc();
+            defer self.context.allocator.free(dot_var);
+
+            try writer.writeAll(dot_var);
+        }
+
+        for (self.getFuncs()) |func| {
+            const dot_func = try func.getDotAlloc();
+            defer self.context.allocator.free(dot_func);
+
+            try writer.writeAll(dot_func);
+        }
+
+        try writer.writeAll("}\n");
+    }
+
+    pub fn saveDot(self: *const SnapShot, filename: []const u8) !void {
+        const file = try std.fs.cwd().createFile(filename, .{});
+        defer file.close();
+
+        try self.writeDot(file.writer());
+    }
+
+    // TODO: snapshot -> add destroy var, func function?
 };

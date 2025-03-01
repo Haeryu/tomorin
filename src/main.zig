@@ -63,7 +63,7 @@ pub fn main() !void {
     defer cuda_context.deinit();
 
     var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
-        .aggressive_release = true,
+        .aggressive_release = false,
         .init_func_capacity = 0,
         .init_var_capacity = 0,
         .verbose_dot = true,
@@ -91,14 +91,25 @@ pub fn main() !void {
 
     //const z = try add(f32, x1, try div(f32, x1, x2));
 
+    var snapshot = context.createSnapShot();
+
+    snapshot.shotStart();
     var z = try taylorSin(F, x1, 1e-40);
+    snapshot.shotEnd();
+
+    try snapshot.saveDot("graph/graph.dot");
     // var z = try taylorSin(F, x1, 1e-4);
     z.ref().setName("z");
     defer z.release();
 
     //try context.backward(f32, z, &.{ x1, x2 });
-    std.debug.print("back\n", .{});
+
+    snapshot.shotStart();
     try context.backward(F, z, &.{x1});
+    snapshot.shotEnd();
+
+    try snapshot.saveDot("graph/graph_grad.dot");
+
     x1.ref().refGrad().?.setName("x_grad");
     z.ref().refGrad().?.setName("z_grad");
 
