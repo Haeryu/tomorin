@@ -62,7 +62,12 @@ pub fn main() !void {
     var cuda_context = try tomo.cuda_context.CudaContext.init();
     defer cuda_context.deinit();
 
-    var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, true, true, false);
+    var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
+        .aggressive_release = true,
+        .init_func_capacity = 0,
+        .init_var_capacity = 0,
+        .verbose_dot = true,
+    });
     defer context.deinit();
 
     const F = f64;
@@ -87,6 +92,7 @@ pub fn main() !void {
     //const z = try add(f32, x1, try div(f32, x1, x2));
 
     var z = try taylorSin(F, x1, 1e-40);
+    // var z = try taylorSin(F, x1, 1e-4);
     z.ref().setName("z");
     defer z.release();
 
@@ -115,6 +121,5 @@ pub fn main() !void {
     std.debug.print("{d}", .{host_z});
     std.debug.print("{d}", .{gx1});
     //std.debug.print("{d}", .{gx2});
-    std.debug.print("{}\n", .{context.countAliveVariableAtLevel(0)});
-    std.debug.print("{}\n", .{context.countAliveVariableAtLevel(1)});
+    std.debug.print("{}\n", .{try context.countAliveVariable()});
 }

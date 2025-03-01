@@ -21,16 +21,16 @@ pub const Function = struct {
     pub const max_out = 3;
 
     pub const Queue = std.PriorityQueue(
-        *Function,
+        FuncKey,
         void,
         struct {
-            fn comp(_: void, a: *Function, b: *Function) std.math.Order {
+            fn comp(_: void, a: FuncKey, b: FuncKey) std.math.Order {
                 return std.math.order(b.getGeneration(), a.getGeneration());
             }
         }.comp,
     );
 
-    pub const SeenSet = std.AutoHashMap(*Function, void);
+    pub const SeenSet = std.AutoHashMap(FuncKey, void);
 
     const VTable = struct {
         destroy: *const fn (ctx: *anyopaque) void,

@@ -9,130 +9,65 @@ const LevelStack = @import("stack.zig").LevelStack;
 const Function = @import("function.zig").Function;
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
+const Pool = @import("nina").container.pool.Pool;
 
 const function = @import("function.zig");
+
+pub const ContextOptions = struct {
+    aggressive_release: bool = false,
+    verbose_dot: bool = false,
+    init_var_capacity: usize = 0,
+    init_func_capacity: usize = 0,
+};
 
 pub const Context = struct {
     cuda_context: *const CudaContext,
     stream: *const Stream,
     allocator: std.mem.Allocator,
-    aggressive_release: bool = false,
-    recycle_host_memory: bool = true,
-    function_level_stack: LevelStack(Function),
-    tagged_var_level_stack: LevelStack(TaggedVar),
-    verbose_dot: bool,
+
+    functions: std.ArrayList(Function),
+    tagged_vars: Pool(TaggedVar),
+    options: ContextOptions,
+
     const func_max_out = 3;
 
     pub fn init(
         allocator: std.mem.Allocator,
         cuda_context: *const CudaContext,
         stream: *const Stream,
-        aggressive_release: bool,
-        recycle_host_memory: bool,
-        verbose_dot: bool,
+        options: ContextOptions,
     ) !Context {
-        var self: Context = .{
+        return .{
             .allocator = allocator,
             .cuda_context = cuda_context,
             .stream = stream,
-            .verbose_dot = verbose_dot,
-            .aggressive_release = aggressive_release,
-            .recycle_host_memory = recycle_host_memory,
-            .function_level_stack = LevelStack(Function).init(allocator),
-            .tagged_var_level_stack = LevelStack(TaggedVar).init(allocator),
+            .functions = try std.ArrayList(Function).initCapacity(allocator, options.init_func_capacity),
+            .tagged_vars = try Pool(TaggedVar).initCapacity(allocator, options.init_var_capacity),
+            .options = options,
         };
-
-        try self.makeNewLevel();
-
-        return self;
     }
 
     pub fn deinit(self: *Context) void {
-        for (self.function_level_stack.levels.items) |level| {
-            for (level.items) |*func| {
-                func.destroy();
-            }
+        self.destroyFunctions();
+        self.destroyVariables();
+
+        self.functions.deinit();
+        self.tagged_vars.deinit();
+    }
+
+    pub fn destroyFunctions(self: *Context) void {
+        for (self.functions.items) |*f| {
+            f.destroy();
         }
-        for (self.tagged_var_level_stack.levels.items) |level| {
-            for (level.items) |*variable| {
-                variable.deinit();
-            }
+    }
+
+    pub fn destroyVariables(self: *Context) void {
+        var var_iter = self.tagged_vars.getIter() catch unreachable;
+        defer var_iter.deinit();
+
+        while (var_iter.nextPtr()) |v| {
+            v.deinit();
         }
-        self.function_level_stack.deinit();
-        self.tagged_var_level_stack.deinit();
-    }
-
-    pub fn destroyTopLevelFunctions(self: *Context) void {
-        const funcs = self.getTopLevelFunctions();
-        for (funcs.items) |*func| {
-            func.destroy();
-        }
-        self.function_level_stack.destroyTopLevel();
-    }
-
-    pub fn makeNewLevel(self: *Context) !void {
-        try self.function_level_stack.makeNewLevel();
-        try self.tagged_var_level_stack.makeNewLevel();
-    }
-
-    pub fn getCurrentLevel(self: *Context) usize {
-        return self.tagged_var_level_stack.levels.items.len - 1;
-    }
-
-    pub fn getCurrentLevelTopTaggedVarIndex(self: *Context) usize {
-        return self.tagged_var_level_stack.getTopLevelTopItemIndex();
-    }
-
-    pub fn getCurrentLevelTopTaggedVar(self: *Context) *TaggedVar {
-        return self.tagged_var_level_stack.getTopLevelTopItem();
-    }
-
-    pub fn getCurrentLevelTopTaggedVarConst(self: *const Context) *const TaggedVar {
-        return self.tagged_var_level_stack.getTopLevelTopItemConst();
-    }
-
-    pub fn pushTaggedVarAtCurrentLevelTop(self: *Context, tagged_var: TaggedVar) !void {
-        return self.tagged_var_level_stack.pushAtTopLevel(tagged_var);
-    }
-
-    pub fn getTopLevelVariables(self: *Context) *std.ArrayList(TaggedVar) {
-        return self.tagged_var_level_stack.getTopLevel();
-    }
-
-    pub fn getLevelVariables(self: *Context, level: usize) *std.ArrayList(TaggedVar) {
-        return self.tagged_var_level_stack.getLevel(level);
-    }
-
-    pub fn getLevelVariablesConst(self: *const Context, level: usize) *const std.ArrayList(TaggedVar) {
-        return self.tagged_var_level_stack.getLevelConst(level);
-    }
-
-    pub fn getCurrentLevelTopFunctionIndex(self: *Context) usize {
-        return self.function_level_stack.getTopLevelTopItemIndex();
-    }
-
-    pub fn getCurrentLevelTopFunction(self: *Context) *Function {
-        return self.function_level_stack.getTopLevelTopItem();
-    }
-
-    pub fn getCurrentLevelTopFunctionConst(self: *const Context) *const Function {
-        return self.function_level_stack.getTopLevelTopItemConst();
-    }
-
-    pub fn pushFunctionAtCurrentLevelTop(self: *Context, func: Function) !void {
-        return self.function_level_stack.pushAtTopLevel(func);
-    }
-
-    pub fn getTopLevelFunctions(self: *Context) *std.ArrayList(Function) {
-        return self.function_level_stack.getTopLevel();
-    }
-
-    pub fn getLevelFunctions(self: *Context, level: usize) *std.ArrayList(Function) {
-        return self.function_level_stack.getLevel(level);
-    }
-
-    pub fn getLevelFunctionsConst(self: *const Context, level: usize) *const std.ArrayList(Function) {
-        return self.function_level_stack.getLevelConst(level);
     }
 
     pub fn createVariable(
@@ -150,37 +85,33 @@ pub const Context = struct {
 
         const tagged = TaggedVar.init(T, variable);
 
-        try self.pushTaggedVarAtCurrentLevelTop(tagged);
+        const index = try self.tagged_vars.pushItem(tagged);
 
         const self_key: VarKey = .{
-            .level = self.getCurrentLevel(),
-            .index = self.getCurrentLevelTopTaggedVarIndex(),
+            .index = index,
             .context = self,
         };
 
-        self.getCurrentLevelTopTaggedVar().setSelfkey(self_key);
+        self.tagged_vars.getItem(index).setSelfkey(self_key);
 
         return self_key;
     }
 
     pub fn registerFunction(self: *Context, func: Function) !FuncKey {
-        try self.pushFunctionAtCurrentLevelTop(func);
+        try self.functions.append(func);
 
         return .{
-            .level = self.getCurrentLevel(),
-            .index = self.getCurrentLevelTopFunctionIndex(),
+            .index = self.functions.items.len - 1,
             .context = self,
         };
     }
 
     pub fn refVariable(self: *Context, key: VarKey) *TaggedVar {
-        const variable = &self.tagged_var_level_stack.levels.items[key.level].items[key.index];
-        return variable;
+        return self.tagged_vars.getItem(key.index);
     }
 
-    pub fn refVariableConst(self: *Context, key: VarKey) *const TaggedVar {
-        const variable = &self.tagged_var_level_stack.levels.items[key.level].items[key.index];
-        return variable;
+    pub fn refVariableConst(self: *const Context, key: VarKey) *const TaggedVar {
+        return self.tagged_vars.getItemConst(key.index);
     }
 
     pub fn acquireVariable(self: *Context, key: VarKey) *TaggedVar {
@@ -198,19 +129,20 @@ pub const Context = struct {
     pub fn releaseVariable(self: *Context, key: VarKey) void {
         const variable = self.refVariable(key);
         variable.release();
-        if (self.aggressive_release) {
+        if (self.options.aggressive_release) {
             if (variable.getRefCount() == 0) {
                 variable.deinit();
+                self.tagged_vars.destroyItem(key.index);
             }
         }
     }
 
     pub fn refFunction(self: *Context, key: FuncKey) *Function {
-        return &self.function_level_stack.levels.items[key.level].items[key.index];
+        return &self.functions.items[key.index];
     }
 
     pub fn refFunctionConst(self: *const Context, key: FuncKey) *const Function {
-        return &self.function_level_stack.levels.items[key.level].items[key.index];
+        return &self.functions.items[key.index];
     }
 
     pub fn backward(
@@ -219,14 +151,8 @@ pub const Context = struct {
         key: VarKey,
         grad_catch_vars: []const VarKey,
     ) !void {
-        // if (key.level < self.getCurrentLevel()) {
-        //     return;
-        // }
-
-        try self.makeNewLevel();
-
         const variable = self.acquireVariable(key).asUntagged(T);
-        const creator = variable.refCreator() orelse return error.NoCreator;
+        const creator = variable.creator orelse return error.NoCreator;
 
         var ones = try tomo.tensor.GPUTensor(T).initAsync(variable.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);
@@ -254,19 +180,19 @@ pub const Context = struct {
             self.refVariable(grad_catch_var).acquireGrad();
         }
 
-        if (self.aggressive_release) {
-            self.destroyTopLevelFunctions(); // f'
-            self.destroyTopLevelFunctions(); // f
+        if (self.options.aggressive_release) {
+            self.destroyFunctions();
+            self.functions.clearAndFree(); // retain??
         }
     }
 
-    pub fn countAliveVariableAtLevel(self: *const Context, level: usize) usize {
-        const var_level = self.getLevelVariablesConst(level);
+    pub fn countAliveVariable(self: *const Context) !usize {
+        var var_iter = try self.tagged_vars.getIter();
+        defer var_iter.deinit();
+
         var count: usize = 0;
-        for (var_level.items) |*variable| {
-            // if (variable.getRefCount() != 0) {
-            //     count += 1;
-            // }
+
+        while (var_iter.nextPtr()) |variable| {
             if (!variable.isDataNull()) {
                 count += 1;
             }
@@ -275,21 +201,20 @@ pub const Context = struct {
         return count;
     }
 
-    pub fn writeDot(self: *const Context, level: usize, writer: anytype) !void {
-        const level_vars = self.getLevelVariablesConst(level);
-        const level_funcs = self.getLevelFunctionsConst(level);
+    pub fn writeDot(self: *const Context, writer: anytype) !void {
+        std.debug.assert(!self.options.aggressive_release);
 
         try writer.writeAll("digraph g {\n");
 
-        for (level_vars.items) |level_variable| {
-            const dot_var = try level_variable.getDotAlloc();
+        for (self.tagged_vars.datas.items) |variable| {
+            const dot_var = try variable.getDotAlloc();
             defer self.allocator.free(dot_var);
 
             try writer.writeAll(dot_var);
         }
 
-        for (level_funcs.items) |level_function| {
-            const dot_func = try level_function.getDotAlloc();
+        for (self.functions.items) |func| {
+            const dot_func = try func.getDotAlloc();
             defer self.allocator.free(dot_func);
 
             try writer.writeAll(dot_func);
@@ -298,16 +223,15 @@ pub const Context = struct {
         try writer.writeAll("}\n");
     }
 
-    pub fn saveDot(self: *const Context, level: usize, filename: []const u8) !void {
+    pub fn saveDot(self: *const Context, filename: []const u8) !void {
         const file = try std.fs.cwd().createFile(filename, .{});
         defer file.close();
 
-        try self.writeDot(level, file.writer());
+        try self.writeDot(file.writer());
     }
 };
 
 pub const VarKey = struct {
-    level: usize,
     index: usize,
     context: *Context,
 
@@ -330,71 +254,39 @@ pub const VarKey = struct {
     pub fn release(self: VarKey) void {
         self.context.releaseVariable(self);
     }
+
+    pub fn acquire(self: VarKey) void {
+        var mut_self = self;
+        mut_self.ref().acquire();
+    }
+
+    pub fn setGrad(self: VarKey, grad: VarKey) void {
+        var mut_self = self;
+        mut_self.ref().setGrad(grad);
+    }
 };
 
-// pub fn VarKeyTyped(comptime T: type) type {
-//     return struct {
-//         varkey: VarKey,
-
-//         const Self = @This();
-
-//         pub fn neg(self: Self) !Self {
-//             return Self{ .varkey = try function.neg(T, self.varkey) };
-//         }
-
-//         pub fn square(self: Self) !Self {
-//             return Self{ .varkey = try function.square(T, self.varkey) };
-//         }
-
-//         pub fn exp(self: Self) !Self {
-//             return Self{ .varkey = try function.exp(T, self.varkey) };
-//         }
-
-//         //
-
-//         pub fn shift(self: Self, scalar: T) !Self {
-//             return Self{ .varkey = try function.shift(T, self.varkey, scalar) };
-//         }
-
-//         pub fn scale(self: Self, scalar: T) !Self {
-//             return Self{ .varkey = try function.scale(T, self.varkey, scalar) };
-//         }
-
-//         pub fn powf(self: Self, scalar: T) !Self {
-//             return Self{ .varkey = try function.powf(T, self.varkey, scalar) };
-//         }
-
-//         pub fn pow(self: Self, scalar: i32) !Self {
-//             return Self{ .varkey = try function.pow(T, self.varkey, scalar) };
-//         }
-
-//         //
-//         pub fn scaleShift(self: Self, scal: T, shif: T) !Self {
-//             return Self{ .varkey = try function.scaleShift(T, self.varkey, scal, shif) };
-//         }
-
-//         //
-
-//         pub fn add(self: Self, other: Self) !Self {
-//             return Self{ .varkey = try function.add(T, self.varkey, other) };
-//         }
-
-//         pub fn sub(self: Self, other: Self) !Self {
-//             return Self{ .varkey = try function.sub(T, self.varkey, other) };
-//         }
-
-//         pub fn mul(self: Self, other: Self) !Self {
-//             return Self{ .varkey = try function.mul(T, self.varkey, other) };
-//         }
-
-//         pub fn div(self: Self, other: Self) !Self {
-//             return Self{ .varkey = try function.div(T, self.varkey, other) };
-//         }
-//     };
-// }
-
 pub const FuncKey = struct {
-    level: usize,
     index: usize,
     context: *Context,
+
+    pub fn getGeneration(self: FuncKey) usize {
+        return self.context.refFunction(self).getGeneration();
+    }
+
+    pub fn backward(self: FuncKey) !void {
+        try self.context.refFunction(self).backward();
+    }
+
+    pub fn enqueue(self: FuncKey, function_queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
+        try self.context.refFunction(self).enqueue(function_queue, seen_set);
+    }
+
+    pub fn ref(self: FuncKey) *Function {
+        return self.context.refFunction(self);
+    }
+
+    pub fn refConst(self: FuncKey) *const Function {
+        return self.context.refFunctionConst(self);
+    }
 };

@@ -71,50 +71,39 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
             const context = self.base.self_key.context;
             self.in = args[0];
 
-            var in = context.acquireVariable(args[0]).asUntaggedConst(Self.In);
-            defer {
-                if (!Self.owns_in) {
-                    context.releaseVariable(self.in.?);
-                }
+            if (Self.owns_in) {
+                self.in.?.acquire();
             }
 
-            var y = try self.forward(&in.data);
+            var y = try self.forward(&self.in.?.refConst().asUntaggedConst(Self.In).data);
             errdefer y.deinitAsync(context.stream);
 
-            const var_y = try context.createVariable(Self.Out, y, null);
-            defer context.releaseVariable(var_y);
+            const var_y = try context.createVariable(Self.Out, y.move(), null);
+            defer var_y.release();
             self.out = var_y;
 
-            in = context.refVariable(args[0]).asUntaggedConst(Self.In);
-            self.base.generation = in.generation;
-            context.acquireVariable(var_y).asUntagged(Self.Out).setCreator(
+            if (Self.owns_out) {
+                self.out.?.acquire();
+            }
+
+            self.base.generation = self.in.?.refConst().getGeneration();
+            self.out.?.ref().asUntagged(Self.Out).setCreator(
                 self.base.self_key,
                 self.base.generation,
             );
-
-            defer {
-                if (!Self.owns_out) {
-                    context.releaseVariable(self.out.?);
-                }
-            }
 
             out[0] = var_y;
         }
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const context = self.base.self_key.context;
 
-            const out = context.refVariable(self.out.?).asUntaggedConst(Self.Out);
+            const gx = try self.backward(self.out.?.refConst().asUntaggedConst(Self.Out).grad.?);
 
-            const gx = try self.backward(out.grad.?);
-
-            const in = context.refVariable(self.in.?).asUntagged(Self.In);
-
-            if (in.grad) |in_grad| {
-                in.grad = try add(Self.Out, in_grad, gx);
+            if (self.in.?.refConst().asUntaggedConst(Self.Out).grad) |in_grad| {
+                self.in.?.setGrad(try add(Self.Out, in_grad, gx));
             } else {
-                in.grad = gx;
+                self.in.?.setGrad(gx);
             }
         }
 
@@ -124,10 +113,9 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
             const in = context.refVariable(self.in.?).asUntagged(Self.In);
 
             if (in.creator) |creator| {
-                const in_creator = context.refFunction(creator);
-                if (!seen_set.contains(in_creator)) {
-                    try seen_set.put(in_creator, {});
-                    try queue.add(in_creator);
+                if (!seen_set.contains(creator)) {
+                    try seen_set.put(creator, {});
+                    try queue.add(creator);
                 }
             }
         }
@@ -137,8 +125,8 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
             const allocator = self.base.self_key.context.allocator;
             const in = if (Self.owns_in) try self.in.?.ref().getDotAlloc() else "";
             defer if (Self.owns_in) allocator.free(in) else {};
-            const out = if (Self.owns_out) try self.in.?.ref().getDotAlloc() else "";
-            defer if (Self.owns_in) allocator.free(out) else {};
+            const out = if (Self.owns_out) try self.out.?.ref().getDotAlloc() else "";
+            defer if (Self.owns_out) allocator.free(out) else {};
 
             const scalar = try std.fmt.allocPrint(allocator, "{} [label=\"{s}\", color=aquamarine, style=filled, shape=circle]", .{
                 @intFromPtr(&self.scalar),

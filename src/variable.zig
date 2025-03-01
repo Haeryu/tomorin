@@ -45,6 +45,10 @@ pub fn Variable(comptime T: type) type {
             return self.self_key.context.refVariableConst(self.grad orelse return null);
         }
 
+        pub fn setGrad(self: *Self, grad: VarKey) void {
+            self.grad = grad;
+        }
+
         pub fn acquire(self: *Self) void {
             self.refcount += 1;
         }
@@ -82,7 +86,7 @@ pub fn Variable(comptime T: type) type {
             const fmt = comptime "{} [label=\"{s}\", color=orange, style=filled]\n";
             const name = self.name orelse "";
 
-            if (self.self_key.context.verbose_dot) {
+            if (self.self_key.context.options.verbose_dot) {
                 const name_alloc = try std.fmt.allocPrint(self.self_key.context.allocator, "{s} {s}, shape: {any}", .{
                     name,
                     @tagName(type_tag),
@@ -146,10 +150,10 @@ pub const TaggedVar = union(enum) {
         };
     }
 
-    pub fn getGeneration(self: *TaggedVar) usize {
-        switch (self.*) {
+    pub fn getGeneration(self: *const TaggedVar) usize {
+        return switch (self.*) {
             inline else => |*v| v.generation,
-        }
+        };
     }
 
     pub fn getCreator(self: *TaggedVar) FuncKey {
@@ -227,6 +231,12 @@ pub const TaggedVar = union(enum) {
     pub fn setName(self: *TaggedVar, name: []const u8) void {
         switch (self.*) {
             inline else => |*v| v.setName(name),
+        }
+    }
+
+    pub fn setGrad(self: *TaggedVar, grad: VarKey) void {
+        switch (self.*) {
+            inline else => |*v| v.setGrad(grad),
         }
     }
 };
