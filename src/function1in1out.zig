@@ -179,7 +179,7 @@ pub fn Neg(comptime T: type) type {
         const Out = T;
 
         const owns_in = false;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -215,7 +215,7 @@ pub fn Square(comptime T: type) type {
         const Out = T;
 
         const owns_in = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -251,7 +251,7 @@ pub fn Exp(comptime T: type) type {
         const Out = T;
 
         const owns_in = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -284,7 +284,7 @@ pub fn Sin(comptime T: type) type {
         const Out = T;
 
         const owns_in = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -317,7 +317,7 @@ pub fn Cos(comptime T: type) type {
         const Out = T;
 
         const owns_in = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -331,7 +331,7 @@ pub fn Cos(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: VarKey) !VarKey {
-            return try mul(T, try sin(T, self.in.?), gy);
+            return try mul(T, try scale(T, try sin(T, self.in.?), -1.0), gy);
         }
     };
 }

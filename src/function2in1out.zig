@@ -229,7 +229,7 @@ pub fn Add(comptime T: type) type {
 
         const owns_in1 = false;
         const owns_in2 = false;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -278,7 +278,7 @@ pub fn Sub(comptime T: type) type {
 
         const owns_in1 = false;
         const owns_in2 = false;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -323,7 +323,7 @@ pub fn Mul(comptime T: type) type {
 
         const owns_in1 = true;
         const owns_in2 = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -362,7 +362,7 @@ pub fn Div(comptime T: type) type {
 
         const owns_in1 = true;
         const owns_in2 = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 

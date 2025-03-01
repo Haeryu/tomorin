@@ -212,7 +212,7 @@ pub fn ScaleShift(comptime T: type) type {
         const Out = T;
 
         const owns_in = false;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator2Scalar1in1out(Self);
 

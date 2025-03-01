@@ -16,7 +16,8 @@ pub const Context = struct {
     cuda_context: *const CudaContext,
     stream: *const Stream,
     allocator: std.mem.Allocator,
-    compact_mode: bool = false,
+    aggressive_release: bool = false,
+    recycle_host_memory: bool = true,
     function_level_stack: LevelStack(Function),
     tagged_var_level_stack: LevelStack(TaggedVar),
     verbose_dot: bool,
@@ -26,15 +27,17 @@ pub const Context = struct {
         allocator: std.mem.Allocator,
         cuda_context: *const CudaContext,
         stream: *const Stream,
-        compact_mode: bool,
+        aggressive_release: bool,
+        recycle_host_memory: bool,
         verbose_dot: bool,
     ) !Context {
         var self: Context = .{
             .allocator = allocator,
             .cuda_context = cuda_context,
             .stream = stream,
-            .compact_mode = compact_mode,
             .verbose_dot = verbose_dot,
+            .aggressive_release = aggressive_release,
+            .recycle_host_memory = recycle_host_memory,
             .function_level_stack = LevelStack(Function).init(allocator),
             .tagged_var_level_stack = LevelStack(TaggedVar).init(allocator),
         };
@@ -65,20 +68,6 @@ pub const Context = struct {
             func.destroy();
         }
         self.function_level_stack.destroyTopLevel();
-    }
-
-    pub fn gc(self: *Context) void {
-        for (0..self.tagged_var_level_stack.levels.len) |i| {
-            self.gcLevel(i);
-        }
-    }
-
-    pub fn gcLevel(self: *Context, level: usize) void {
-        for (self.tagged_var_level_stack.levels.items[level].items) |*variable| {
-            if (variable.getRefCount() == 0) {
-                variable.deinit();
-            }
-        }
     }
 
     pub fn makeNewLevel(self: *Context) !void {
@@ -209,6 +198,11 @@ pub const Context = struct {
     pub fn releaseVariable(self: *Context, key: VarKey) void {
         const variable = self.refVariable(key);
         variable.release();
+        if (self.aggressive_release) {
+            if (variable.getRefCount() == 0) {
+                variable.deinit();
+            }
+        }
     }
 
     pub fn refFunction(self: *Context, key: FuncKey) *Function {
@@ -260,15 +254,9 @@ pub const Context = struct {
             self.refVariable(grad_catch_var).acquireGrad();
         }
 
-        if (self.compact_mode) {
+        if (self.aggressive_release) {
             self.destroyTopLevelFunctions(); // f'
             self.destroyTopLevelFunctions(); // f
-
-            const prime_level = self.getCurrentLevel();
-            const func_level = prime_level - 1;
-
-            self.gcLevel(prime_level);
-            self.gcLevel(func_level);
         }
     }
 

@@ -193,7 +193,7 @@ pub fn Shift(comptime T: type) type {
         const Out = T;
 
         const owns_in = false;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
@@ -230,7 +230,7 @@ pub fn Scale(comptime T: type) type {
         const Out = T;
 
         const owns_in = false;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
@@ -263,7 +263,7 @@ pub fn Powf(comptime T: type) type {
         const Out = T;
 
         const owns_in = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
@@ -300,7 +300,7 @@ pub fn Pow(comptime T: type) type {
         const Out = T;
 
         const owns_in = true;
-        const owns_out = false;
+        const owns_out = true;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
