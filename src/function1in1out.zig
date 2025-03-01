@@ -7,7 +7,6 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
-const VarKey = @import("context.zig").VarKey;
 const FuncKey = @import("context.zig").FuncKey;
 
 const TaggedVar = @import("variable.zig").TaggedVar;
@@ -54,12 +53,10 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
 
-            if (Self.owns_in) {
-                context.releaseVariable(self.in.?);
-            }
-            if (Self.owns_out) {
-                context.releaseVariable(self.out.?);
-            }
+            self.in.?.release();
+            self.in = null;
+            self.out.?.release();
+            self.out = null;
             context.allocator.destroy(self);
         }
 
@@ -68,56 +65,50 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             return self.base.generation;
         }
 
-        pub fn forwardDecorated(ctx: *anyopaque, args: []const VarKey, out: []?VarKey) !void {
+        pub fn forwardDecorated(ctx: *anyopaque, args: []*TaggedVar, out: []?*TaggedVar) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+
             const context = self.base.self_key.context;
+
             self.in = args[0];
 
-            if (Self.owns_in) {
-                self.in.?.acquire();
-            }
-
-            var y = try self.forward(&self.in.?.refConst().asUntaggedConst(Self.In).data);
+            var y = try self.forward(&self.in.?.asUntaggedConst(Self.In).data);
             errdefer y.deinitAsync(context.stream);
 
-            const var_y = try context.createVariable(Self.Out, y.move(), null);
-            defer var_y.release();
-            self.out = var_y;
+            self.out = try context.createVariable(Self.Out, y.move(), null);
 
-            if (Self.owns_out) {
-                self.out.?.acquire();
-            }
-
-            self.base.generation = self.in.?.refConst().getGeneration();
-            self.out.?.ref().asUntagged(Self.Out).setCreator(
+            self.base.generation = self.in.?.getGeneration();
+            self.out.?.asUntagged(Self.Out).setCreator(
                 self.base.self_key,
                 self.base.generation,
             );
 
-            out[0] = var_y;
+            out[0] = self.out.?;
         }
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
-            const gx = try self.backward(self.out.?.refConst().asUntaggedConst(Self.Out).grad.?);
+            const gx = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
 
-            if (self.in.?.refConst().asUntaggedConst(Self.Out).grad) |in_grad| {
-                self.in.?.setGrad(try add(Self.Out, in_grad, gx));
-            } else {
-                self.in.?.setGrad(gx);
+            if (self.in) |in| {
+                if (in.asUntaggedConst(Self.Out).grad) |in_grad| {
+                    in.setGrad(try add(Self.Out, in_grad, gx));
+                } else {
+                    in.setGrad(gx);
+                }
             }
         }
 
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const context = self.base.self_key.context;
-            const in = context.refVariable(self.in.?).asUntagged(Self.In);
 
-            if (in.creator) |creator| {
-                if (!seen_set.contains(creator)) {
-                    try seen_set.put(creator, {});
-                    try queue.add(creator);
+            if (self.in) |in| {
+                if (in.asUntaggedConst(Self.In).creator) |creator| {
+                    if (!seen_set.contains(creator)) {
+                        try seen_set.put(creator, {});
+                        try queue.add(creator);
+                    }
                 }
             }
         }
@@ -125,10 +116,10 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
         pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const allocator = self.base.self_key.context.allocator;
-            const in = if (Self.owns_in) try self.in.?.ref().getDotAlloc() else "";
-            defer if (Self.owns_in) allocator.free(in) else {};
-            const out = if (Self.owns_out) try self.out.?.ref().getDotAlloc() else "";
-            defer if (Self.owns_out) allocator.free(out) else {};
+            const in = try self.in.?.getDotAlloc();
+            defer allocator.free(in);
+            const out = try self.out.?.ref().getDotAlloc();
+            defer allocator.free(out);
 
             return try std.fmt.allocPrint(allocator,
                 \\{} [label="{s}", color=lightblue, style=filled, shape=box]
@@ -151,24 +142,23 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
     };
 }
 
-fn makefunc(comptime F: type, x: VarKey) !VarKey {
-    const funckey = try F.create(x.context);
-    var out: [Function.max_out]?VarKey = .{null} ** Function.max_out;
-    try x.context.refFunction(funckey).forward(&.{x}, out[0..1]);
+fn makefunc(comptime F: type, x: *const TaggedVar) !*TaggedVar {
+    const funckey = try F.create(x.getContext());
+    var out: [Function.max_out]?*TaggedVar = .{null} ** Function.max_out;
+    var in: [1]*TaggedVar = .{x};
+
+    try x.getContext().refFunction(funckey).forward(&in, out[0..1]);
     return out[0].?;
 }
 
 pub fn Neg(comptime T: type) type {
     return struct {
-        in: ?VarKey,
-        out: ?VarKey,
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
         base: FunctionBase,
 
         const In = T;
         const Out = T;
-
-        const owns_in = false;
-        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -181,7 +171,7 @@ pub fn Neg(comptime T: type) type {
             return try y.scale(-1.0, context.cuda_context, context.stream);
         }
 
-        pub fn backward(_: *Self, gy: VarKey) !VarKey {
+        pub fn backward(_: *Self, gy: *TaggedVar) !*TaggedVar {
             return try neg(T, gy);
         }
     };
@@ -189,22 +179,19 @@ pub fn Neg(comptime T: type) type {
 
 pub fn neg(
     comptime T: type,
-    x: VarKey,
-) !VarKey {
+    x: *TaggedVar,
+) !*TaggedVar {
     return try makefunc(Neg(T), x);
 }
 
 pub fn Square(comptime T: type) type {
     return struct {
-        in: ?VarKey,
-        out: ?VarKey,
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
         base: FunctionBase,
 
         const In = T;
         const Out = T;
-
-        const owns_in = true;
-        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -217,30 +204,24 @@ pub fn Square(comptime T: type) type {
             return y;
         }
 
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             return try mul(T, try scale(T, self.in.?, 2.0), gy);
         }
     };
 }
 
-pub fn square(
-    comptime T: type,
-    x: VarKey,
-) !VarKey {
+pub fn square(comptime T: type, x: *TaggedVar) !*TaggedVar {
     return try makefunc(Square(T), x);
 }
 
 pub fn Exp(comptime T: type) type {
     return struct {
-        in: ?VarKey,
-        out: ?VarKey,
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
         base: FunctionBase,
 
         const In = T;
         const Out = T;
-
-        const owns_in = true;
-        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -253,27 +234,24 @@ pub fn Exp(comptime T: type) type {
             return y;
         }
 
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             return try mul(T, self.in.?, gy);
         }
     };
 }
 
-pub fn exp(comptime T: type, x: VarKey) !VarKey {
+pub fn exp(comptime T: type, x: *TaggedVar) !*TaggedVar {
     return try makefunc(Exp(T), x);
 }
 
 pub fn Sin(comptime T: type) type {
     return struct {
-        in: ?VarKey,
-        out: ?VarKey,
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
         base: FunctionBase,
 
         const In = T;
         const Out = T;
-
-        const owns_in = true;
-        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -286,27 +264,24 @@ pub fn Sin(comptime T: type) type {
             return y;
         }
 
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             return try mul(T, try cos(T, self.in.?), gy);
         }
     };
 }
 
-pub fn sin(comptime T: type, x: VarKey) !VarKey {
+pub fn sin(comptime T: type, x: *TaggedVar) !*TaggedVar {
     return try makefunc(Sin(T), x);
 }
 
 pub fn Cos(comptime T: type) type {
     return struct {
-        in: ?VarKey,
-        out: ?VarKey,
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
         base: FunctionBase,
 
         const In = T;
         const Out = T;
-
-        const owns_in = true;
-        const owns_out = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -319,12 +294,12 @@ pub fn Cos(comptime T: type) type {
             return y;
         }
 
-        pub fn backward(self: *Self, gy: VarKey) !VarKey {
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             return try mul(T, try scale(T, try sin(T, self.in.?), -1.0), gy);
         }
     };
 }
 
-pub fn cos(comptime T: type, x: VarKey) !VarKey {
+pub fn cos(comptime T: type, x: *TaggedVar) !*TaggedVar {
     return try makefunc(Cos(T), x);
 }

@@ -7,10 +7,10 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
-const VarKey = @import("context.zig").VarKey;
 const FuncKey = @import("context.zig").FuncKey;
 
 const Variable = @import("variable.zig").Variable;
+const TaggedVar = @import("variable.zig").TaggedVar;
 
 const sliceCast = @import("util.zig").sliceCast;
 
@@ -35,7 +35,7 @@ pub const Function = struct {
     const VTable = struct {
         destroy: *const fn (ctx: *anyopaque) void,
 
-        forward: *const fn (ctx: *anyopaque, args: []const VarKey, out: []?VarKey) anyerror!void,
+        forward: *const fn (ctx: *anyopaque, args: []*TaggedVar, out: []?*TaggedVar) anyerror!void,
 
         backward: *const fn (ctx: *anyopaque) anyerror!void,
 
@@ -50,7 +50,7 @@ pub const Function = struct {
         self.vtable.destroy(self.ptr);
     }
 
-    pub fn forward(self: *Function, args: []const VarKey, out: []?VarKey) !void {
+    pub fn forward(self: *Function, args: []*TaggedVar, out: []?*TaggedVar) !void {
         try self.vtable.forward(self.ptr, args, out);
     }
 
@@ -94,7 +94,7 @@ pub usingnamespace @import("function2scalar1in1out.zig");
 //     return z;
 // }
 
-pub fn matyas(comptime T: type, x: VarKey, y: VarKey) !VarKey {
+pub fn matyas(comptime T: type, x: *TaggedVar, y: *TaggedVar) !*TaggedVar {
     const x_y_sq = try @This().add(T, try @This().square(T, x), try @This().square(T, y));
     const x_y_sq_sc = try @This().scale(T, x_y_sq, 0.26);
 

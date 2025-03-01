@@ -18,6 +18,7 @@ pub const ContextOptions = struct {
     verbose_dot: bool = false,
     init_var_capacity: usize = 0,
     init_func_capacity: usize = 0,
+    count_variables: bool = true,
 };
 
 pub const Context = struct {
@@ -26,8 +27,10 @@ pub const Context = struct {
     allocator: std.mem.Allocator,
 
     functions: std.ArrayList(Function),
-    tagged_vars: Pool(TaggedVar),
+    tagged_vars: std.heap.MemoryPool(TaggedVar),
     options: ContextOptions,
+
+    variable_count: usize = 0,
 
     const func_max_out = 3;
 
@@ -42,16 +45,17 @@ pub const Context = struct {
             .cuda_context = cuda_context,
             .stream = stream,
             .functions = try std.ArrayList(Function).initCapacity(allocator, options.init_func_capacity),
-            .tagged_vars = try Pool(TaggedVar).initCapacity(allocator, options.init_var_capacity),
+            .tagged_vars = try std.heap.MemoryPool(TaggedVar).initPreheated(allocator, options.init_var_capacity),
             .options = options,
         };
     }
 
     pub fn deinit(self: *Context) void {
         self.destroyFunctions();
-        self.destroyVariables();
-
         self.functions.deinit();
+        if (self.options.count_variables) {
+            std.debug.assert(self.variable_count == 0);
+        }
         self.tagged_vars.deinit();
     }
 
@@ -61,40 +65,29 @@ pub const Context = struct {
         }
     }
 
-    pub fn destroyVariables(self: *Context) void {
-        var var_iter = self.tagged_vars.getIter() catch unreachable;
-        defer var_iter.deinit();
-
-        while (var_iter.nextPtr()) |v| {
-            v.deinit();
-        }
-    }
-
     pub fn createVariable(
         self: *Context,
         comptime T: type,
         data: GPUTensor(T),
         name: ?[]const u8,
-    ) !VarKey {
+    ) !*TaggedVar {
         const variable: Variable(T) = .{
             .data = data,
             .name = name,
-            .self_key = undefined,
-            .refcount = 1,
+            .context = self,
+            .protected = false,
         };
 
         const tagged = TaggedVar.init(T, variable);
 
-        const index = try self.tagged_vars.pushItem(tagged);
+        const ptr = try self.tagged_vars.create();
+        ptr.* = tagged;
 
-        const self_key: VarKey = .{
-            .index = index,
-            .context = self,
-        };
+        if (self.options.count_variables) {
+            self.variable_count += 1;
+        }
 
-        self.tagged_vars.getItem(index).setSelfkey(self_key);
-
-        return self_key;
+        return ptr;
     }
 
     pub fn registerFunction(self: *Context, func: Function) !FuncKey {
@@ -104,37 +97,6 @@ pub const Context = struct {
             .index = self.functions.items.len - 1,
             .context = self,
         };
-    }
-
-    pub fn refVariable(self: *Context, key: VarKey) *TaggedVar {
-        return self.tagged_vars.getItem(key.index);
-    }
-
-    pub fn refVariableConst(self: *const Context, key: VarKey) *const TaggedVar {
-        return self.tagged_vars.getItemConst(key.index);
-    }
-
-    pub fn acquireVariable(self: *Context, key: VarKey) *TaggedVar {
-        const variable = self.refVariable(key);
-        variable.acquire();
-        return variable;
-    }
-
-    pub fn acquireVariableConst(self: *Context, key: VarKey) *const TaggedVar {
-        const variable = self.refVariable(key);
-        variable.acquire();
-        return variable;
-    }
-
-    pub fn releaseVariable(self: *Context, key: VarKey) void {
-        const variable = self.refVariable(key);
-        variable.release();
-        if (self.options.aggressive_release) {
-            if (variable.getRefCount() == 0) {
-                variable.deinit();
-                self.tagged_vars.destroyItem(key.index);
-            }
-        }
     }
 
     pub fn refFunction(self: *Context, key: FuncKey) *Function {
@@ -148,19 +110,21 @@ pub const Context = struct {
     pub fn backward(
         self: *Context,
         comptime T: type,
-        key: VarKey,
-        grad_catch_vars: []const VarKey,
+        variable: *TaggedVar,
+        grad_catch_vars: []const *TaggedVar,
     ) !void {
-        const variable = self.acquireVariable(key).asUntagged(T);
-        const creator = variable.creator orelse return error.NoCreator;
+        const variable_untagged = variable.asUntagged(T);
+        const creator = variable.getCreator() orelse return error.NoCreator;
 
-        var ones = try tomo.tensor.GPUTensor(T).initAsync(variable.data.base.getShape(), self.stream);
+        var ones = try tomo.tensor.GPUTensor(T).initAsync(variable_untagged.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);
         try ones.fill(1.0, self.stream);
 
         const initial_grad = try self.createVariable(T, ones, null);
+        initial_grad.protect();
+        defer initial_grad.unprotect();
 
-        variable.grad = initial_grad;
+        variable_untagged.grad = initial_grad;
 
         var function_queue = Function.Queue.init(self.allocator, {});
         defer function_queue.deinit();
@@ -176,72 +140,17 @@ pub const Context = struct {
             try func.enqueue(&function_queue, &seen_set);
         }
 
-        for (grad_catch_vars) |grad_catch_var| {
-            self.refVariable(grad_catch_var).acquireGrad();
-        }
-
         if (self.options.aggressive_release) {
-            self.destroyFunctions();
-            self.functions.clearAndFree(); // retain??
-        }
-    }
-
-    pub fn countAliveVariable(self: *const Context) !usize {
-        var var_iter = try self.tagged_vars.getIter();
-        defer var_iter.deinit();
-
-        var count: usize = 0;
-
-        while (var_iter.nextPtr()) |variable| {
-            if (!variable.isDataNull()) {
-                count += 1;
+            for (grad_catch_vars) |grad_catch_var| {
+                grad_catch_var.refGrad().?.protect();
             }
+            defer for (grad_catch_vars) |grad_catch_var| {
+                grad_catch_var.refGrad().?.unprotect();
+            };
+
+            self.destroyFunctions();
+            self.functions.clearRetainingCapacity();
         }
-
-        return count;
-    }
-
-    pub fn createSnapShot(self: *const Context) SnapShot {
-        std.debug.assert(!self.options.aggressive_release);
-
-        return .{
-            .context = self,
-        };
-    }
-};
-
-pub const VarKey = struct {
-    index: usize,
-    context: *Context,
-
-    pub fn ref(self: *VarKey) *TaggedVar {
-        return self.context.refVariable(self.*);
-    }
-
-    pub fn refConst(self: *const VarKey) *const TaggedVar {
-        return self.context.refVariableConst(self.*);
-    }
-
-    pub fn dataToHost(self: *const VarKey, comptime T: type) !tomo.tensor.CPUTensor(T) {
-        return try self.refConst().asUntaggedConst(T).data.toHost(self.context.allocator, self.context.stream);
-    }
-
-    pub fn gradToHost(self: *const VarKey, comptime T: type) !tomo.tensor.CPUTensor(T) {
-        return try self.refConst().refGradConst().?.asUntaggedConst(T).data.toHost(self.context.allocator, self.context.stream);
-    }
-
-    pub fn release(self: VarKey) void {
-        self.context.releaseVariable(self);
-    }
-
-    pub fn acquire(self: VarKey) void {
-        var mut_self = self;
-        mut_self.ref().acquire();
-    }
-
-    pub fn setGrad(self: VarKey, grad: VarKey) void {
-        var mut_self = self;
-        mut_self.ref().setGrad(grad);
     }
 };
 
@@ -268,61 +177,4 @@ pub const FuncKey = struct {
     pub fn refConst(self: FuncKey) *const Function {
         return self.context.refFunctionConst(self);
     }
-};
-
-pub const SnapShot = struct {
-    start_var_idx: ?usize = null,
-    start_func_idx: ?usize = null,
-    end_var_idx: ?usize = null,
-    end_func_idx: ?usize = null,
-    context: *const Context,
-
-    pub fn shotStart(self: *SnapShot) void {
-        self.start_var_idx = self.context.tagged_vars.datas.items.len;
-        self.start_func_idx = self.context.functions.items.len;
-    }
-
-    pub fn shotEnd(self: *SnapShot) void {
-        self.end_var_idx = self.context.tagged_vars.datas.items.len;
-        self.end_func_idx = self.context.functions.items.len;
-    }
-
-    fn getVars(self: *SnapShot) []TaggedVar {
-        return self.context.tagged_vars.datas.items[self.start_var_idx.?..self.end_var_idx.?];
-    }
-
-    fn getFuncs(self: *SnapShot) []TaggedVar {
-        return self.context.functions.items[self.start_func_idx.?..self.end_func_idx.?];
-    }
-
-    pub fn writeDot(self: *const SnapShot, writer: anytype) !void {
-        std.debug.assert(!self.context.options.aggressive_release);
-
-        try writer.writeAll("digraph g {\n");
-
-        for (self.getVars()) |variable| {
-            const dot_var = try variable.getDotAlloc();
-            defer self.context.allocator.free(dot_var);
-
-            try writer.writeAll(dot_var);
-        }
-
-        for (self.getFuncs()) |func| {
-            const dot_func = try func.getDotAlloc();
-            defer self.context.allocator.free(dot_func);
-
-            try writer.writeAll(dot_func);
-        }
-
-        try writer.writeAll("}\n");
-    }
-
-    pub fn saveDot(self: *const SnapShot, filename: []const u8) !void {
-        const file = try std.fs.cwd().createFile(filename, .{});
-        defer file.close();
-
-        try self.writeDot(file.writer());
-    }
-
-    // TODO: snapshot -> add destroy var, func function?
 };

@@ -7,7 +7,6 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
-const VarKey = @import("context.zig").VarKey;
 const FuncKey = @import("context.zig").FuncKey;
 
 const Function = @import("function.zig").Function;
@@ -17,15 +16,40 @@ pub fn Variable(comptime T: type) type {
         data: GPUTensor(T),
         name: ?[]const u8 = null,
         generation: usize = 0,
-        grad: ?VarKey = null,
+        grad: ?*TaggedVar = null,
         creator: ?FuncKey = null,
-        self_key: VarKey,
-        refcount: usize,
+        context: *Context,
+        protected: bool = false,
 
         const Self = @This();
 
-        pub fn deinit(self: *Self) void {
-            self.data.deinitAsync(self.self_key.context.stream);
+        pub fn destroy(self: *Self) void {
+            if (self.data.isInvalidated()) {
+                return;
+            }
+            self.data.deinitAsync(self.context.stream);
+            self.data.ptr = null;
+
+            if (self.context.options.count_variables) {
+                self.context.variable_count -= 1;
+            }
+            if (self.grad) |grad| {
+                grad.release();
+            }
+        }
+
+        pub fn release(self: *Self) void {
+            if (!self.protected) {
+                self.destroy();
+            }
+        }
+
+        pub fn protect(self: *Self) void {
+            self.protected = true;
+        }
+
+        pub fn unprotect(self: *Self) void {
+            self.protected = false;
         }
 
         pub fn setCreator(self: *Self, creator: FuncKey, creator_generation: usize) void {
@@ -38,44 +62,19 @@ pub fn Variable(comptime T: type) type {
         }
 
         pub fn refGrad(self: *const Self) ?*TaggedVar {
-            return self.self_key.context.refVariable(self.grad orelse return null);
+            return self.grad orelse return null;
         }
 
         pub fn refGradConst(self: *const Self) ?*const TaggedVar {
-            return self.self_key.context.refVariableConst(self.grad orelse return null);
+            return self.grad orelse return null;
         }
 
-        pub fn setGrad(self: *Self, grad: VarKey) void {
+        pub fn setGrad(self: *Self, grad: *TaggedVar) void {
             self.grad = grad;
         }
 
-        pub fn acquire(self: *Self) void {
-            self.refcount += 1;
-        }
-
-        pub fn release(self: *Self) void {
-            self.refcount -= 1;
-        }
-
-        pub fn acquireGrad(self: *Self) void {
-            return self.self_key.context.refVariable(self.grad.?).acquire();
-        }
-
-        pub fn releaseGrad(self: *Self) void {
-            return self.self_key.context.refVariable(self.grad.?).release();
-        }
-
-        pub fn setSelfkey(self: *Self, self_key: VarKey) void {
+        pub fn setSelfkey(self: *Self, self_key: *TaggedVar) void {
             self.self_key = self_key;
-        }
-
-        pub fn isDataNull(self: *const Self) bool {
-            return self.data.ptr == null;
-        }
-
-        pub fn clearGrad(self: *Self) void {
-            self.grad.?.release();
-            self.grad = null;
         }
 
         pub fn setName(self: *Self, name: []const u8) void {
@@ -86,21 +85,23 @@ pub fn Variable(comptime T: type) type {
             const fmt = comptime "{} [label=\"{s}\", color=orange, style=filled]\n";
             const name = self.name orelse "";
 
-            if (self.self_key.context.options.verbose_dot) {
-                const name_alloc = try std.fmt.allocPrint(self.self_key.context.allocator, "{s} {s}, shape: {any}", .{
+            if (self.context.options.verbose_dot) {
+                const name_alloc = try std.fmt.allocPrint(self.context.allocator, "{s} {s}\nshape: {any}\nprotected: {}\ngeneration: {}", .{
                     name,
                     @tagName(type_tag),
                     self.data.base.getShapeConst(),
+                    self.protected,
+                    self.generation,
                 });
-                defer self.self_key.context.allocator.free(name_alloc);
+                defer self.context.allocator.free(name_alloc);
 
-                return try std.fmt.allocPrint(self.self_key.context.allocator, fmt, .{
-                    @intFromPtr(self.self_key.refConst()),
+                return try std.fmt.allocPrint(self.context.allocator, fmt, .{
+                    @intFromPtr(self),
                     std.mem.trim(u8, name_alloc, " "),
                 });
             } else {
-                return try std.fmt.allocPrint(self.self_key.context.allocator, fmt, .{
-                    @intFromPtr(self.self_key.refConst()),
+                return try std.fmt.allocPrint(self.context.allocator, fmt, .{
+                    @intFromPtr(self),
                     std.mem.trim(u8, name, " "),
                 });
             }
@@ -124,9 +125,9 @@ pub const TaggedVar = union(enum) {
         };
     }
 
-    pub fn deinit(self: *TaggedVar) void {
+    pub fn destroy(self: *TaggedVar) void {
         switch (self.*) {
-            inline else => |*v| v.deinit(),
+            inline else => |*v| v.destroy(),
         }
     }
 
@@ -156,34 +157,10 @@ pub const TaggedVar = union(enum) {
         };
     }
 
-    pub fn getCreator(self: *TaggedVar) FuncKey {
-        switch (self.*) {
+    pub fn getCreator(self: *TaggedVar) ?FuncKey {
+        return switch (self.*) {
             inline else => |*v| v.creator,
-        }
-    }
-
-    pub fn getSelfkey(self: *TaggedVar) VarKey {
-        switch (self.*) {
-            inline else => |*v| v.var_key,
-        }
-    }
-
-    pub fn setSelfkey(self: *TaggedVar, self_key: VarKey) void {
-        switch (self.*) {
-            inline else => |*v| v.setSelfkey(self_key),
-        }
-    }
-
-    pub fn acquire(self: *TaggedVar) void {
-        switch (self.*) {
-            inline else => |*v| v.acquire(),
-        }
-    }
-
-    pub fn release(self: *TaggedVar) void {
-        switch (self.*) {
-            inline else => |*v| v.release(),
-        }
+        };
     }
 
     pub fn refGrad(self: *TaggedVar) ?*TaggedVar {
@@ -196,24 +173,6 @@ pub const TaggedVar = union(enum) {
         return switch (self.*) {
             inline else => |*v| v.refGradConst(),
         };
-    }
-
-    pub fn getRefCount(self: *const TaggedVar) usize {
-        return switch (self.*) {
-            inline else => |*v| v.refcount,
-        };
-    }
-
-    pub fn acquireGrad(self: *TaggedVar) void {
-        switch (self.*) {
-            inline else => |*v| v.acquireGrad(),
-        }
-    }
-
-    pub fn releaseGrad(self: *TaggedVar) void {
-        switch (self.*) {
-            inline else => |*v| v.releaseGrad(),
-        }
     }
 
     pub fn isDataNull(self: *TaggedVar) bool {
@@ -234,9 +193,39 @@ pub const TaggedVar = union(enum) {
         }
     }
 
-    pub fn setGrad(self: *TaggedVar, grad: VarKey) void {
+    pub fn setGrad(self: *TaggedVar, grad: *TaggedVar) void {
         switch (self.*) {
             inline else => |*v| v.setGrad(grad),
         }
+    }
+
+    pub fn protect(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.protect(),
+        }
+    }
+
+    pub fn unprotect(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.unprotect(),
+        }
+    }
+
+    pub fn release(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.release(),
+        }
+    }
+
+    pub fn getContext(self: *TaggedVar) *Context {
+        return switch (self.*) {
+            inline else => |*v| v.context,
+        };
+    }
+
+    pub fn getContextConst(self: *const TaggedVar) *const Context {
+        return switch (self.*) {
+            inline else => |*v| v.context,
+        };
     }
 };
