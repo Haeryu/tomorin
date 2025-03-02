@@ -75,6 +75,10 @@ pub fn Variable(comptime T: type) type {
             self.generation = creator_generation + 1;
         }
 
+        pub fn resetCreator(self: *Self) void {
+            self.creator = null;
+        }
+
         pub fn refCreator(self: *const Self) ?*Function {
             return self.self_key.context.refFunction(self.creator orelse return null);
         }
@@ -189,6 +193,12 @@ pub const TaggedVar = union(enum) {
         return switch (self.*) {
             inline else => |*v| v.creator,
         };
+    }
+
+    pub fn resetCreator(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.resetCreator(),
+        }
     }
 
     pub fn refGrad(self: *TaggedVar) ?*TaggedVar {

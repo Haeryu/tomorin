@@ -53,12 +53,19 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
 
-            self.in1.?.release();
-            self.in1 = null;
-            self.in2.?.release();
-            self.in2 = null;
-            self.out.?.release();
-            self.out = null;
+            if (self.in1) |in1| {
+                in1.release();
+                self.in1 = null;
+            }
+            if (self.in2) |in2| {
+                in2.release();
+                self.in2 = null;
+            }
+            if (self.out) |out| {
+                out.release();
+                out.resetCreator();
+                self.out = null;
+            }
             context.allocator.destroy(self);
         }
 
@@ -91,6 +98,11 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
             );
 
             out[0] = self.out.?;
+
+            // if (context.options.front_only) {
+            //     // self.in = null;
+            //     self.out = null;
+            // }
         }
 
         pub fn backwardDecorated(ctx: *anyopaque) !void {
@@ -174,6 +186,13 @@ fn makefunc(
     var in: [2]*TaggedVar = .{ x1, x2 };
 
     try x1.getContext().refFunction(funckey).forward(&in, out[0..1]);
+
+    if (x1.getContextConst().options.front_only) {
+        out[0].?.protect();
+        defer out[0].?.unprotect();
+
+        x1.getContext().destroyFunctions();
+    }
 
     return out[0].?;
 }

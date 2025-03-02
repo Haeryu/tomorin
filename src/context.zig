@@ -19,6 +19,7 @@ pub const ContextOptions = struct {
     init_var_capacity: usize = 0,
     init_func_capacity: usize = 0,
     count_variables: bool = true,
+    front_only: bool = false,
 };
 
 pub const Context = struct {
@@ -124,6 +125,8 @@ pub const Context = struct {
         variable: *TaggedVar,
         grad_catch_vars: []const *TaggedVar,
     ) !void {
+        std.debug.assert(!self.options.front_only);
+
         const variable_untagged = variable.asUntagged(T);
         const creator = variable.getCreator() orelse return error.NoCreator;
         self.resetVarChain();

@@ -50,7 +50,7 @@ fn taylorSin(comptime T: type, x: *TaggedVar, threshold: f32) !*TaggedVar {
     return y;
 }
 
-// TODO: fix graphviz
+// TODO: seperate common function in XXXXBase
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -64,10 +64,11 @@ pub fn main() !void {
     defer cuda_context.deinit();
 
     var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
-        .aggressive_release = false,
+        .aggressive_release = true,
         .init_func_capacity = 0,
         .init_var_capacity = 0,
         .verbose_dot = true,
+        .front_only = false,
     });
     defer context.deinit();
 
@@ -90,10 +91,10 @@ pub fn main() !void {
 
     try context.backward(F, y, &.{x});
 
-    try x.refGrad().?.saveDot("graph/graph_grad.dot");
-
     x.refGrad().?.setName("x_grad");
     y.refGrad().?.setName("y_grad");
+
+    //try x.refGrad().?.saveDot("graph/graph_grad.dot");
 
     try stream.sync();
 
