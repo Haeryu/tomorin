@@ -56,10 +56,6 @@ pub fn Variable(comptime T: type) type {
             return self.before;
         }
 
-        pub fn getBeforeConst(self: *const Self) ?*TaggedVar {
-            return self.before;
-        }
-
         pub fn release(self: *Self) void {
             if (!self.protected) {
                 self.destroy();
@@ -127,6 +123,16 @@ pub fn Variable(comptime T: type) type {
                     std.mem.trim(u8, name, " "),
                 });
             }
+        }
+
+        pub fn calcLen(self: *const Self) usize {
+            var count: usize = 1;
+            var now = self.getBefore();
+            while (now) |nonnull_now| : (now = nonnull_now.getBefore()) {
+                count += 1;
+            }
+
+            return count;
         }
     };
 }
@@ -266,9 +272,6 @@ pub const TaggedVar = union(enum) {
     pub fn writeFlowDot(self: *const TaggedVar, writer: anytype) !void {
         var now: ?*const TaggedVar = self;
 
-        var function_queue = Function.Queue.init(self.getContextConst().allocator, {});
-        defer function_queue.deinit();
-
         var seen_set = Function.SeenSet.init(self.getContextConst().allocator);
         defer seen_set.deinit();
 
@@ -281,15 +284,15 @@ pub const TaggedVar = union(enum) {
             try writer.writeAll(dot_str);
 
             if (nonnull_now.getCreator()) |creator| {
-                try creator.enqueue(&function_queue, &seen_set);
+                if (seen_set.contains(creator)) continue;
+
+                try seen_set.put(creator, {});
+
+                const func_str = try creator.ref().getDotAlloc();
+                defer self.getContextConst().allocator.free(func_str);
+
+                try writer.writeAll(func_str);
             }
-        }
-
-        while (function_queue.removeOrNull()) |func| {
-            const func_str = try func.ref().getDotAlloc();
-            defer self.getContextConst().allocator.free(func_str);
-
-            try writer.writeAll(func_str);
         }
 
         try writer.writeAll("}");
@@ -300,5 +303,11 @@ pub const TaggedVar = union(enum) {
         defer file.close();
 
         try self.writeFlowDot(file.writer());
+    }
+
+    pub fn calcLen(self: *const TaggedVar) usize {
+        return switch (self.*) {
+            inline else => |*v| v.calcLen(),
+        };
     }
 };

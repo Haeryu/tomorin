@@ -90,9 +90,6 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                 self.base.generation,
             );
 
-            self.out.?.setBefore(self.in2);
-            self.in2.?.setBefore(self.in1);
-
             out[0] = self.out.?;
         }
 
@@ -116,21 +113,17 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
-            if (self.in1) |in1| {
-                if (in1.asUntaggedConst(Self.In1).creator) |creator1| {
-                    if (!seen_set.contains(creator1)) {
-                        try seen_set.put(creator1, {});
-                        try queue.add(creator1);
-                    }
+            if (self.in1.?.asUntaggedConst(Self.In1).creator) |creator1| {
+                if (!seen_set.contains(creator1)) {
+                    try seen_set.put(creator1, {});
+                    try queue.add(creator1);
                 }
             }
 
-            if (self.in2) |in2| {
-                if (in2.asUntaggedConst(Self.In2).creator) |creator2| {
-                    if (!seen_set.contains(creator2)) {
-                        try seen_set.put(creator2, {});
-                        try queue.add(creator2);
-                    }
+            if (self.in2.?.asUntaggedConst(Self.In2).creator) |creator2| {
+                if (!seen_set.contains(creator2)) {
+                    try seen_set.put(creator2, {});
+                    try queue.add(creator2);
                 }
             }
         }

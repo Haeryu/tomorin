@@ -30,6 +30,8 @@ pub const Context = struct {
     tagged_vars: std.heap.MemoryPool(TaggedVar),
     options: ContextOptions,
 
+    var_chain: ?*TaggedVar,
+
     variable_count: usize = 0,
 
     const func_max_out = 3;
@@ -47,6 +49,7 @@ pub const Context = struct {
             .functions = try std.ArrayList(Function).initCapacity(allocator, options.init_func_capacity),
             .tagged_vars = try std.heap.MemoryPool(TaggedVar).initPreheated(allocator, options.init_var_capacity),
             .options = options,
+            .var_chain = null,
         };
     }
 
@@ -88,7 +91,14 @@ pub const Context = struct {
             self.variable_count += 1;
         }
 
+        ptr.setBefore(self.var_chain);
+        self.var_chain = ptr;
+
         return ptr;
+    }
+
+    pub fn resetVarChain(self: *Context) void {
+        self.var_chain = null;
     }
 
     pub fn registerFunction(self: *Context, func: Function) !FuncKey {
@@ -116,6 +126,7 @@ pub const Context = struct {
     ) !void {
         const variable_untagged = variable.asUntagged(T);
         const creator = variable.getCreator() orelse return error.NoCreator;
+        self.resetVarChain();
 
         var ones = try tomo.tensor.GPUTensor(T).initAsync(variable_untagged.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);

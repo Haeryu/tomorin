@@ -104,4 +104,6 @@ pub fn main() !void {
 
     std.debug.print("{d}", .{host_y});
     std.debug.print("{}\n", .{context.variable_count});
+    std.debug.print("{}\n", .{y.calcLen()});
+    std.debug.print("{}\n", .{x.refGradConst().?.calcLen()});
 }

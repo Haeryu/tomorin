@@ -84,8 +84,6 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                 self.base.generation,
             );
 
-            self.out.?.setBefore(self.in);
-
             out[0] = self.out.?;
         }
 
@@ -104,12 +102,10 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
         pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
-            if (self.in) |in| {
-                if (in.asUntaggedConst(Self.In).creator) |creator| {
-                    if (!seen_set.contains(creator)) {
-                        try seen_set.put(creator, {});
-                        try queue.add(creator);
-                    }
+            if (self.in.?.asUntaggedConst(Self.In).creator) |creator| {
+                if (!seen_set.contains(creator)) {
+                    try seen_set.put(creator, {});
+                    try queue.add(creator);
                 }
             }
         }
