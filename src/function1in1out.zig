@@ -14,14 +14,19 @@ const Variable = @import("variable.zig").Variable;
 
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
+const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBase;
+const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
 const add = @import("function2in1out.zig").add;
 const scale = @import("function1scalar1in1out.zig").scale;
 const mul = @import("function2in1out.zig").mul;
 
 // TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
+
 pub fn FuncDecorator1in1out(comptime Self: type) type {
     return struct {
+        const Base = FuncDecorator1in1outBase(Self);
+
         pub fn create(context: *Context) !FuncKey {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
@@ -29,11 +34,11 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             const self_key = try context.registerFunction(.{
                 .ptr = self,
                 .vtable = &.{
-                    .forward = &forwardDecorated,
-                    .backward = &backwardDecorated,
-                    .destroy = &destroy,
-                    .get_generation = &getGeneration,
-                    .enqueue = &enqueue,
+                    .forward = &Base.forwardDecorated,
+                    .backward = &Base.backwardDecorated,
+                    .destroy = &Base.destroy,
+                    .get_generation = &Base.getGeneration,
+                    .enqueue = &Base.enqueue,
                     .get_dot_alloc = &getDotAlloc,
                 },
             });
@@ -47,76 +52,6 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             };
 
             return self_key;
-        }
-
-        pub fn destroy(ctx: *anyopaque) void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            const context = self.base.self_key.context;
-
-            if (self.in) |in| {
-                in.release();
-                self.in = null;
-            }
-            if (self.out) |out| {
-                out.release();
-                out.resetCreator();
-                self.out = null;
-            }
-            context.allocator.destroy(self);
-        }
-
-        pub fn getGeneration(ctx: *anyopaque) usize {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-            return self.base.generation;
-        }
-
-        pub fn forwardDecorated(ctx: *anyopaque, args: []*TaggedVar, out: []?*TaggedVar) !void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-
-            const context = self.base.self_key.context;
-
-            self.in = args[0];
-
-            var y = try self.forward(&self.in.?.asUntaggedConst(Self.In).data);
-            errdefer y.deinitAsync(context.stream);
-
-            self.out = try context.createVariable(Self.Out, y.move(), null);
-
-            self.base.generation = self.in.?.getGeneration();
-            self.out.?.asUntagged(Self.Out).setCreator(
-                self.base.self_key,
-                self.base.generation,
-            );
-
-            out[0] = self.out.?;
-
-            // if (context.options.front_only) {
-            //     self.in = null;
-            //     self.out = null;
-            // }
-        }
-
-        pub fn backwardDecorated(ctx: *anyopaque) !void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-
-            const gx = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
-
-            if (self.in.?.asUntaggedConst(Self.Out).grad) |in_grad| {
-                self.in.?.setGrad(try add(Self.Out, in_grad, gx));
-            } else {
-                self.in.?.setGrad(gx);
-            }
-        }
-
-        pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
-
-            if (self.in.?.asUntaggedConst(Self.In).creator) |creator| {
-                if (!seen_set.contains(creator)) {
-                    try seen_set.put(creator, {});
-                    try queue.add(creator);
-                }
-            }
         }
 
         pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
@@ -147,19 +82,8 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
 
 fn makefunc(comptime F: type, x: *const TaggedVar) !*TaggedVar {
     const funckey = try F.create(x.getContext());
-    var out: [Function.max_out]?*TaggedVar = .{null} ** Function.max_out;
-    var in: [1]*TaggedVar = .{x};
 
-    try x.getContext().refFunction(funckey).forward(&in, out[0..1]);
-
-    // if (x.getContextConst().options.front_only) {
-    //     out[0].?.protect();
-    //     defer out[0].?.unprotect();
-
-    //     x.getContext().destroyFunctions();
-    // }
-
-    return out[0].?;
+    return try makefunc1in1outBase(funckey, x);
 }
 
 pub fn Neg(comptime T: type) type {
@@ -168,10 +92,10 @@ pub fn Neg(comptime T: type) type {
         out: ?*TaggedVar,
         base: FunctionBase,
 
-        const In = T;
-        const Out = T;
+        pub const In = T;
+        pub const Out = T;
 
-        const ref_in_at_back = false;
+        pub const ref_in_at_back = false;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -203,10 +127,10 @@ pub fn Square(comptime T: type) type {
         out: ?*TaggedVar,
         base: FunctionBase,
 
-        const ref_in_at_back = true;
+        pub const ref_in_at_back = true;
 
-        const In = T;
-        const Out = T;
+        pub const In = T;
+        pub const Out = T;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -235,10 +159,10 @@ pub fn Exp(comptime T: type) type {
         out: ?*TaggedVar,
         base: FunctionBase,
 
-        const In = T;
-        const Out = T;
+        pub const In = T;
+        pub const Out = T;
 
-        const ref_in_at_back = true;
+        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -267,10 +191,10 @@ pub fn Sin(comptime T: type) type {
         out: ?*TaggedVar,
         base: FunctionBase,
 
-        const In = T;
-        const Out = T;
+        pub const In = T;
+        pub const Out = T;
 
-        const ref_in_at_back = true;
+        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -299,10 +223,10 @@ pub fn Cos(comptime T: type) type {
         out: ?*TaggedVar,
         base: FunctionBase,
 
-        const In = T;
-        const Out = T;
+        pub const In = T;
+        pub const Out = T;
 
-        const ref_in_at_back = true;
+        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
