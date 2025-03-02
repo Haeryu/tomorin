@@ -90,6 +90,9 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                 self.base.generation,
             );
 
+            self.out.?.setBefore(self.in2);
+            self.in2.?.setBefore(self.in1);
+
             out[0] = self.out.?;
         }
 
@@ -98,20 +101,15 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
 
             const gx1, const gx2 = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
 
-            if (self.in1) |in1| {
-                if (in1.asUntaggedConst(Self.Out).grad) |in_grad1| {
-                    in1.setGrad(try add(Self.Out, in_grad1, gx1));
-                } else {
-                    in1.setGrad(gx1);
-                }
+            if (self.in1.?.asUntaggedConst(Self.Out).grad) |in_grad1| {
+                self.in1.?.setGrad(try add(Self.Out, in_grad1, gx1));
+            } else {
+                self.in1.?.setGrad(gx1);
             }
-
-            if (self.in2) |in2| {
-                if (in2.asUntaggedConst(Self.Out).grad) |in_grad2| {
-                    in2.setGrad(try add(Self.Out, in_grad2, gx2));
-                } else {
-                    in2.setGrad(gx2);
-                }
+            if (self.in2.?.asUntaggedConst(Self.Out).grad) |in_grad2| {
+                self.in2.?.setGrad(try add(Self.Out, in_grad2, gx2));
+            } else {
+                self.in2.?.setGrad(gx2);
             }
         }
 
@@ -140,19 +138,16 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
         pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const allocator = self.base.self_key.context.allocator;
-            const in1 = try self.in1.?.getDotAlloc();
-            defer allocator.free(in1);
-            const in2 = try self.in2.?.getDotAlloc();
-            defer allocator.free(in2);
-            const out = try self.out.?.getDotAlloc();
-            defer allocator.free(out);
+            const in1 = if (Self.ref_in1_at_back) try self.in1.?.getDotAlloc() else "";
+            defer if (Self.ref_in1_at_back) allocator.free(in1);
+            const in2 = if (Self.ref_in2_at_back) try self.in2.?.getDotAlloc() else "";
+            defer if (Self.ref_in2_at_back) allocator.free(in2);
 
             return try std.fmt.allocPrint(self.base.self_key.context.allocator,
                 \\{} [label="{s}", color=lightblue, style=filled, shape=box]
                 \\{} -> {}
                 \\{} -> {}
                 \\{} -> {}
-                \\{s}
                 \\{s}
                 \\{s}
                 \\
@@ -167,7 +162,6 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                 @intFromPtr(self.out.?),
                 in1,
                 in2,
-                out,
             });
         }
     };
@@ -201,6 +195,9 @@ pub fn Add(comptime T: type) type {
         const In1 = T;
         const In2 = T;
         const Out = T;
+
+        const ref_in1_at_back = false;
+        const ref_in2_at_back = false;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -247,6 +244,9 @@ pub fn Sub(comptime T: type) type {
         const In2 = T;
         const Out = T;
 
+        const ref_in1_at_back = false;
+        const ref_in2_at_back = false;
+
         pub usingnamespace FuncDecorator2in1out(Self);
 
         const Self = Sub(T);
@@ -288,6 +288,9 @@ pub fn Mul(comptime T: type) type {
         const In2 = T;
         const Out = T;
 
+        const ref_in1_at_back = true;
+        const ref_in2_at_back = true;
+
         pub usingnamespace FuncDecorator2in1out(Self);
 
         const Self = Mul(T);
@@ -322,6 +325,9 @@ pub fn Div(comptime T: type) type {
         const In1 = T;
         const In2 = T;
         const Out = T;
+
+        const ref_in1_at_back = true;
+        const ref_in2_at_back = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 

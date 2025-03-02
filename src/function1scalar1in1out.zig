@@ -81,6 +81,8 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
                 self.base.generation,
             );
 
+            self.out.?.setBefore(self.in);
+
             out[0] = self.out.?;
         }
 
@@ -89,12 +91,10 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
 
             const gx = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
 
-            if (self.in) |in| {
-                if (in.asUntaggedConst(Self.Out).grad) |in_grad| {
-                    in.setGrad(try add(Self.Out, in_grad, gx));
-                } else {
-                    in.setGrad(gx);
-                }
+            if (self.in.?.asUntaggedConst(Self.Out).grad) |in_grad| {
+                self.in.?.setGrad(try add(Self.Out, in_grad, gx));
+            } else {
+                self.in.?.setGrad(gx);
             }
         }
 
@@ -114,10 +114,8 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
         pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const allocator = self.base.self_key.context.allocator;
-            const in = try self.in.?.getDotAlloc();
-            defer allocator.free(in);
-            const out = try self.out.?.getDotAlloc();
-            defer allocator.free(out);
+            const in = if (Self.ref_in_at_back) try self.in.?.getDotAlloc() else "";
+            defer if (Self.ref_in_at_back) allocator.free(in);
 
             const scalar = try std.fmt.allocPrint(allocator, "{} [label=\"{s}\", color=aquamarine, style=filled, shape=circle]", .{
                 @intFromPtr(&self.scalar),
@@ -132,7 +130,6 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
                 \\{} -> {}
                 \\{} -> {}
                 \\{s}
-                \\{s}
                 \\
             , .{
                 @intFromPtr(ctx),
@@ -145,7 +142,6 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
                 @intFromPtr(ctx),
                 @intFromPtr(self.out.?),
                 in,
-                out,
             });
         }
     };
@@ -172,6 +168,8 @@ pub fn Shift(comptime T: type) type {
         const Scalar = T;
         const In = T;
         const Out = T;
+
+        const ref_in_at_back = false;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
@@ -207,6 +205,8 @@ pub fn Scale(comptime T: type) type {
         const In = T;
         const Out = T;
 
+        const ref_in_at_back = false;
+
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
         const Self = Scale(T);
@@ -236,6 +236,8 @@ pub fn Powf(comptime T: type) type {
         const Scalar = T;
         const In = T;
         const Out = T;
+
+        const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
@@ -270,6 +272,8 @@ pub fn Pow(comptime T: type) type {
         const Scalar = i32;
         const In = T;
         const Out = T;
+
+        const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 

@@ -84,6 +84,8 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                 self.base.generation,
             );
 
+            self.out.?.setBefore(self.in);
+
             out[0] = self.out.?;
         }
 
@@ -92,12 +94,10 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
 
             const gx = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
 
-            if (self.in) |in| {
-                if (in.asUntaggedConst(Self.Out).grad) |in_grad| {
-                    in.setGrad(try add(Self.Out, in_grad, gx));
-                } else {
-                    in.setGrad(gx);
-                }
+            if (self.in.?.asUntaggedConst(Self.Out).grad) |in_grad| {
+                self.in.?.setGrad(try add(Self.Out, in_grad, gx));
+            } else {
+                self.in.?.setGrad(gx);
             }
         }
 
@@ -117,10 +117,8 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
         pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const allocator = self.base.self_key.context.allocator;
-            const in = try self.in.?.getDotAlloc();
-            defer allocator.free(in);
-            const out = try self.out.?.ref().getDotAlloc();
-            defer allocator.free(out);
+            const in = if (Self.ref_in_at_back) try self.in.?.getDotAlloc() else "";
+            defer if (Self.ref_in_at_back) allocator.free(in);
 
             const scalar1 = try std.fmt.allocPrint(allocator, "{} [label=\"{s}\", color=aquamarine, style=filled, shape=circle]", .{
                 @intFromPtr(&self.scalar1),
@@ -143,7 +141,6 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                 \\{} -> {}
                 \\{} -> {}
                 \\{s}
-                \\{s}
                 \\
             , .{
                 @intFromPtr(ctx),
@@ -159,7 +156,6 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                 @intFromPtr(ctx),
                 @intFromPtr(self.out.?.refConst()),
                 in,
-                out,
             });
         }
     };
@@ -191,6 +187,8 @@ pub fn ScaleShift(comptime T: type) type {
         const Scalar = T;
         const In = T;
         const Out = T;
+
+        const ref_in_at_back = false;
 
         pub usingnamespace FuncDecorator2Scalar1in1out(Self);
 

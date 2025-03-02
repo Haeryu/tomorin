@@ -20,6 +20,7 @@ pub fn Variable(comptime T: type) type {
         creator: ?FuncKey = null,
         context: *Context,
         protected: bool = false,
+        before: ?*TaggedVar = null,
 
         const Self = @This();
 
@@ -27,8 +28,16 @@ pub fn Variable(comptime T: type) type {
             if (self.data.isInvalidated()) {
                 return;
             }
+
             self.data.deinitAsync(self.context.stream);
             self.data.ptr = null;
+
+            if (self.before) |before| {
+                before.setBefore(self.before);
+            }
+            self.before = null;
+
+            self.creator = null;
 
             if (self.context.options.count_variables) {
                 self.context.variable_count -= 1;
@@ -36,6 +45,19 @@ pub fn Variable(comptime T: type) type {
             if (self.grad) |grad| {
                 grad.release();
             }
+            self.grad = null;
+        }
+
+        pub fn setBefore(self: *Self, before: ?*TaggedVar) void {
+            self.before = before;
+        }
+
+        pub fn getBefore(self: *const Self) ?*TaggedVar {
+            return self.before;
+        }
+
+        pub fn getBeforeConst(self: *const Self) ?*TaggedVar {
+            return self.before;
         }
 
         pub fn release(self: *Self) void {
@@ -157,7 +179,7 @@ pub const TaggedVar = union(enum) {
         };
     }
 
-    pub fn getCreator(self: *TaggedVar) ?FuncKey {
+    pub fn getCreator(self: *const TaggedVar) ?FuncKey {
         return switch (self.*) {
             inline else => |*v| v.creator,
         };
@@ -217,6 +239,12 @@ pub const TaggedVar = union(enum) {
         }
     }
 
+    pub fn setBefore(self: *TaggedVar, before: ?*TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.setBefore(before),
+        }
+    }
+
     pub fn getContext(self: *TaggedVar) *Context {
         return switch (self.*) {
             inline else => |*v| v.context,
@@ -227,5 +255,50 @@ pub const TaggedVar = union(enum) {
         return switch (self.*) {
             inline else => |*v| v.context,
         };
+    }
+
+    pub fn getBefore(self: *const TaggedVar) ?*TaggedVar {
+        return switch (self.*) {
+            inline else => |*v| v.getBefore(),
+        };
+    }
+
+    pub fn writeFlowDot(self: *const TaggedVar, writer: anytype) !void {
+        var now: ?*const TaggedVar = self;
+
+        var function_queue = Function.Queue.init(self.getContextConst().allocator, {});
+        defer function_queue.deinit();
+
+        var seen_set = Function.SeenSet.init(self.getContextConst().allocator);
+        defer seen_set.deinit();
+
+        try writer.writeAll("digraph g{\n");
+
+        while (now) |nonnull_now| : (now = nonnull_now.getBefore()) {
+            const dot_str = try nonnull_now.getDotAlloc();
+            defer self.getContextConst().allocator.free(dot_str);
+
+            try writer.writeAll(dot_str);
+
+            if (nonnull_now.getCreator()) |creator| {
+                try creator.enqueue(&function_queue, &seen_set);
+            }
+        }
+
+        while (function_queue.removeOrNull()) |func| {
+            const func_str = try func.ref().getDotAlloc();
+            defer self.getContextConst().allocator.free(func_str);
+
+            try writer.writeAll(func_str);
+        }
+
+        try writer.writeAll("}");
+    }
+
+    pub fn saveDot(self: *const TaggedVar, file_name: []const u8) !void {
+        const file = try std.fs.cwd().createFile(file_name, .{});
+        defer file.close();
+
+        try self.writeFlowDot(file.writer());
     }
 };

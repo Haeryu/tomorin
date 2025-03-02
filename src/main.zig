@@ -50,6 +50,7 @@ fn taylorSin(comptime T: type, x: *TaggedVar, threshold: f32) !*TaggedVar {
     return y;
 }
 
+// TODO: fix graphviz
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -63,7 +64,7 @@ pub fn main() !void {
     defer cuda_context.deinit();
 
     var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
-        .aggressive_release = true,
+        .aggressive_release = false,
         .init_func_capacity = 0,
         .init_var_capacity = 0,
         .verbose_dot = true,
@@ -80,23 +81,16 @@ pub fn main() !void {
     defer x.destroy();
     x.protect();
 
-    // var snapshot = context.createSnapShot();
-
-    //snapshot.shotStart();
-    var y = try taylorSin(F, try taylorSin(F, try taylorSin(F, try taylorSin(F, x, 1e-40), 1e-40), 1e-40), 1e-40);
+    var y = try taylorSin(F, try taylorSin(F, try taylorSin(F, try taylorSin(F, try taylorSin(F, try taylorSin(F, x, 1e-40), 1e-40), 1e-40), 1e-40), 1e-40), 1e-40);
     defer y.destroy();
     y.protect();
-    // snapshot.shotEnd();
     y.setName("y");
 
-    //try snapshot.saveDot("graph/graph.dot");
-    // var z = try taylorSin(F, x1, 1e-4);
+    try y.saveDot("graph/graph.dot");
 
-    //snapshot.shotStart();
     try context.backward(F, y, &.{x});
-    // snapshot.shotEnd();
 
-    //try snapshot.saveDot("graph/graph_grad.dot");
+    try x.refGrad().?.saveDot("graph/graph_grad.dot");
 
     x.refGrad().?.setName("x_grad");
     y.refGrad().?.setName("y_grad");

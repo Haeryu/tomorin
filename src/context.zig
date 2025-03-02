@@ -76,6 +76,7 @@ pub const Context = struct {
             .name = name,
             .context = self,
             .protected = false,
+            .before = null,
         };
 
         const tagged = TaggedVar.init(T, variable);
