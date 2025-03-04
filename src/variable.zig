@@ -169,6 +169,8 @@ pub const TaggedVar = union(enum) {
     f32: Variable(f32),
     f64: Variable(f64),
 
+    pub const SeenSet = std.AutoHashMap(*TaggedVar, void);
+
     pub fn init(comptime T: type, variable: Variable(T)) TaggedVar {
         return switch (T) {
             BF16 => .{ .bf16 = variable },
@@ -314,29 +316,28 @@ pub const TaggedVar = union(enum) {
     }
 
     pub fn writeFlowDot(self: *const TaggedVar, writer: anytype) !void {
-        var now: ?*const TaggedVar = self;
+        // arraylist will work but i dont want make another virtual function
+        var funcs = Function.Queue.init(self.getContextConst().allocator, {});
+        defer funcs.deinit();
 
-        var seen_set = Function.SeenSet.init(self.getContextConst().allocator);
-        defer seen_set.deinit();
+        var func_seen_set = Function.SeenSet.init(self.getContextConst().allocator);
+        defer func_seen_set.deinit();
+
+        var var_seen_set = TaggedVar.SeenSet.init(self.getContextConst().allocator);
+        defer var_seen_set.deinit();
 
         try writer.writeAll("digraph g{\n");
 
-        while (now) |nonnull_now| : (now = nonnull_now.getNext()) {
-            const dot_str = try nonnull_now.getDotAlloc();
+        try funcs.add(self.getCreator().?);
+        try func_seen_set.put(self.getCreator().?, {});
+
+        while (funcs.removeOrNull()) |func| {
+            const dot_str = try func.getDotAlloc(&var_seen_set);
             defer self.getContextConst().allocator.free(dot_str);
 
             try writer.writeAll(dot_str);
 
-            if (nonnull_now.getCreator()) |creator| {
-                if (seen_set.contains(creator)) continue;
-
-                try seen_set.put(creator, {});
-
-                const func_str = try creator.getDotAlloc();
-                defer self.getContextConst().allocator.free(func_str);
-
-                try writer.writeAll(func_str);
-            }
+            try func.enqueue(&funcs, &func_seen_set);
         }
 
         try writer.writeAll("}");

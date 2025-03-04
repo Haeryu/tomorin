@@ -13,6 +13,7 @@ const shift = tomorin.function.shift;
 const scaleShift = tomorin.function.scaleShift;
 const square = tomorin.function.square;
 const sin = tomorin.function.sin;
+const tanh = tomorin.function.tanh;
 const TaggedVar = tomorin.variable.TaggedVar;
 
 fn factorial(x: f64) f64 {
@@ -66,7 +67,7 @@ pub fn main() !void {
         .aggressive_release = false,
         .init_func_capacity = 0,
         .init_var_capacity = 0,
-        .verbose_dot = true,
+        .verbose_dot = false,
         .front_only = false,
     });
     defer context.deinit();
@@ -79,61 +80,26 @@ pub fn main() !void {
 
     var x = try context.createVariable(F, v1.move(), "x");
 
-    var snapshot = context.takeSnapshot();
+    var y = try tanh(F, x);
 
-    var y = try taylorSin(
-        F,
-        x,
-        1e-7,
-    );
+    x.setName("x");
+    y.setName("y");
 
-    snapshot.record();
-
-    std.debug.print("snapshot {}\n", .{snapshot.countVariables()});
-    std.debug.print("snapshot {}\n", .{snapshot.countFunctions()});
-
-    try y.saveDot("graph/graph.dot");
-
-    var gsnapshot = context.takeSnapshot();
     try y.backward();
-    gsnapshot.record();
 
-    x.refGrad().?.setName("x_grad");
-    y.refGrad().?.setName("y_grad");
+    x.refGrad().?.setName("gx");
+    try x.refGrad().?.saveDot("./graph/grad1.dot");
 
-    try x.refGrad().?.saveDot("graph/graph_grad.dot");
+    const iters = 8;
 
-    std.debug.print("gsnapshot {}\n", .{gsnapshot.countVariables()});
-    std.debug.print("gsnapshot {}\n", .{gsnapshot.countFunctions()});
+    inline for (0..iters) |i| {
+        var gx = x.detatchGrad();
+        try gx.backward();
 
-    const gx = x.detatchGrad();
-    var ggsnapshot = context.takeSnapshot();
-    try gx.backward();
-    ggsnapshot.record();
-    try x.refGrad().?.saveDot("graph/graph_grad_grad.dot");
+        const fname = std.fmt.comptimePrint("./graph/grad{}.dot", .{i + 2});
 
-    std.debug.print("ggsnapshot {}\n", .{ggsnapshot.countVariables()});
-    std.debug.print("ggsnapshot {}\n", .{ggsnapshot.countFunctions()});
-
-    try stream.sync();
-
-    var host_y = try y.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_y.deinit(allocator);
-
-    var host_gx = try gx.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_gx.deinit(allocator);
-
-    var host_ggx = try x.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_ggx.deinit(allocator);
-
-    try stream.sync();
-
-    std.debug.print("{d}", .{host_y});
-    std.debug.print("{d}", .{host_gx});
-    std.debug.print("{d}", .{host_ggx});
-    std.debug.print("{}\n", .{context.countVariables()});
-    std.debug.print("{}\n", .{context.countFunctions()});
-    // std.debug.print("{}\n", .{y.calcLen()});
-    // std.debug.print("{}\n", .{x.refGradConst().?.calcLen()});
-    // std.debug.print("{}\n", .{y.refGrad().?.refGrad().?.calcLen()});
+        const gxname = std.fmt.comptimePrint("gx{}", .{i + 2});
+        x.refGrad().?.setName(gxname);
+        try x.refGrad().?.saveDot(fname);
+    }
 }

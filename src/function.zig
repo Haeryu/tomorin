@@ -46,7 +46,7 @@ pub const Function = struct {
 
         get_generation: *const fn (ctx: *anyopaque) usize,
 
-        get_dot_alloc: *const fn (ctx: *anyopaque) anyerror![]u8,
+        get_dot_alloc: *const fn (ctx: *anyopaque, var_seen_set: *TaggedVar.SeenSet) anyerror![]u8,
     };
 
     pub fn destroy(self: *Function) void {
@@ -78,8 +78,8 @@ pub const Function = struct {
         return self.vtable.get_generation(self.ptr);
     }
 
-    pub fn getDotAlloc(self: *const Function) ![]u8 {
-        return self.vtable.get_dot_alloc(self.ptr);
+    pub fn getDotAlloc(self: *const Function, var_seen_set: *TaggedVar.SeenSet) ![]u8 {
+        return self.vtable.get_dot_alloc(self.ptr, var_seen_set);
     }
 };
 

@@ -18,7 +18,9 @@ const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
 const add = @import("function2in1out.zig").add;
 const scale = @import("function1scalar1in1out.zig").scale;
+const shift = @import("function1scalar1in1out.zig").shift;
 const mul = @import("function2in1out.zig").mul;
+const div = @import("function2in1out.zig").div;
 
 // TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
 
@@ -54,33 +56,44 @@ pub fn FuncDecorator1in1out(comptime Self: type) type {
             return func_ptr;
         }
 
-        pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
+        pub fn getDotAlloc(ctx: *anyopaque, var_seen_set: *TaggedVar.SeenSet) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const allocator = self.base.context.allocator;
 
-            const in = if (Self.ref_in_at_back) try self.in.?.getDotAlloc() else "";
-            defer if (Self.ref_in_at_back) allocator.free(in);
+            const in_contains = var_seen_set.contains(self.in.?);
+            const in = if (!in_contains) try self.in.?.getDotAlloc() else "";
+            defer if (!in_contains) allocator.free(in);
+
+            try var_seen_set.put(self.in.?, {});
+
+            const out_contains = var_seen_set.contains(self.out.?);
+            const out = if (!out_contains) try self.out.?.getDotAlloc() else "";
+            defer if (!out_contains) allocator.free(out);
+
+            try var_seen_set.put(self.out.?, {});
 
             return try std.fmt.allocPrint(allocator,
                 \\{} [label="{s}", color=lightblue, style=filled, shape=box]
-                \\{} -> {}
-                \\{} -> {}
                 \\{s}
+                \\{s}
+                \\{} -> {}
+                \\{} -> {}
                 \\
             , .{
                 @intFromPtr(ctx),
                 @typeName(Self)[std.mem.indexOf(u8, @typeName(Self), ".").? + 1 ..],
-                @intFromPtr(self.in.?.refConst()),
-                @intFromPtr(ctx),
-                @intFromPtr(ctx),
-                @intFromPtr(self.out.?.refConst()),
                 in,
+                out,
+                @intFromPtr(self.in.?),
+                @intFromPtr(ctx),
+                @intFromPtr(ctx),
+                @intFromPtr(self.out.?),
             });
         }
     };
 }
 
-fn makefunc(comptime F: type, x: *const TaggedVar) !*TaggedVar {
+fn makefunc(comptime F: type, x: *TaggedVar) !*TaggedVar {
     const funckey = try F.create(x.getContext());
 
     return try makefunc1in1outBase(funckey, x);
@@ -247,4 +260,68 @@ pub fn Cos(comptime T: type) type {
 
 pub fn cos(comptime T: type, x: *TaggedVar) !*TaggedVar {
     return try makefunc(Cos(T), x);
+}
+
+pub fn Tan(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub const ref_in_at_back = true;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Tan(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            var y = try x.cloneAsync(context.stream);
+            try y.tan(context.stream);
+            return y;
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try div(T, gy, try square(T, try cos(T, self.in.?)));
+        }
+    };
+}
+
+pub fn tan(comptime T: type, x: *TaggedVar) !*TaggedVar {
+    return try makefunc(Tan(T), x);
+}
+
+pub fn Tanh(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub const ref_in_at_back = true;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Tanh(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            var y = try x.cloneAsync(context.stream);
+            try y.tanh(context.stream);
+            return y;
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try mul(T, gy, try shift(T, try neg(T, try square(T, self.out.?)), 1.0));
+        }
+    };
+}
+
+pub fn tanh(comptime T: type, x: *TaggedVar) !*TaggedVar {
+    return try makefunc(Tanh(T), x);
 }

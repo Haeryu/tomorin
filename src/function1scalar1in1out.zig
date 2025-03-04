@@ -52,11 +52,21 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
             return func_ptr;
         }
 
-        pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
+        pub fn getDotAlloc(ctx: *anyopaque, var_seen_set: *TaggedVar.SeenSet) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const allocator = self.base.context.allocator;
-            const in = if (Self.ref_in_at_back) try self.in.?.getDotAlloc() else "";
-            defer if (Self.ref_in_at_back) allocator.free(in);
+
+            const in_contains = var_seen_set.contains(self.in.?);
+            const in = if (!in_contains) try self.in.?.getDotAlloc() else "";
+            defer if (!in_contains) allocator.free(in);
+
+            try var_seen_set.put(self.in.?, {});
+
+            const out_contains = var_seen_set.contains(self.out.?);
+            const out = if (!out_contains) try self.out.?.getDotAlloc() else "";
+            defer if (!out_contains) allocator.free(out);
+
+            try var_seen_set.put(self.out.?, {});
 
             const scalar = try std.fmt.allocPrint(allocator, "{} [label=\"{s}\", color=aquamarine, style=filled, shape=circle]", .{
                 @intFromPtr(&self.scalar),
@@ -67,22 +77,24 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
             return try std.fmt.allocPrint(allocator,
                 \\{} [label="{s}", color=lightblue, style=filled, shape=box]
                 \\{s}
-                \\{} -> {}
-                \\{} -> {}
-                \\{} -> {}
                 \\{s}
+                \\{s}
+                \\{} -> {}
+                \\{} -> {}
+                \\{} -> {}
                 \\
             , .{
                 @intFromPtr(ctx),
                 @typeName(Self)[std.mem.indexOf(u8, @typeName(Self), ".").? + 1 ..],
                 scalar,
+                in,
+                out,
                 @intFromPtr(&self.scalar),
                 @intFromPtr(ctx),
                 @intFromPtr(self.in.?),
                 @intFromPtr(ctx),
                 @intFromPtr(ctx),
                 @intFromPtr(self.out.?),
-                in,
             });
         }
     };

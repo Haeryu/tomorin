@@ -1,6 +1,7 @@
 const Function = @import("function.zig").Function;
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Context = @import("context.zig").Context;
+const std = @import("std");
 
 pub const Snapshot = struct {
     start_var: ?*TaggedVar,
