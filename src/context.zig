@@ -10,6 +10,7 @@ const Function = @import("function.zig").Function;
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
 const Pool = @import("nina").container.pool.Pool;
+const BF16 = tomo.BF16;
 
 const function = @import("function.zig");
 
@@ -138,7 +139,6 @@ pub const Context = struct {
         self: *Context,
         comptime T: type,
         variable: *TaggedVar,
-        grad_catch_vars: []const *TaggedVar,
     ) !void {
         std.debug.assert(!self.options.front_only);
 
@@ -148,7 +148,7 @@ pub const Context = struct {
 
         var ones = try tomo.tensor.GPUTensor(T).initAsync(variable_untagged.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);
-        try ones.fill(1.0, self.stream);
+        try ones.fill(if (T == BF16) BF16.fromF32(1.0) else 1.0, self.stream);
 
         const initial_grad = try self.createVariable(T, ones, null);
         initial_grad.protect();
@@ -168,18 +168,6 @@ pub const Context = struct {
         while (function_queue.removeOrNull()) |func| {
             try func.backward();
             try func.enqueue(&function_queue, &seen_set);
-        }
-
-        if (self.options.aggressive_release) {
-            for (grad_catch_vars) |grad_catch_var| {
-                grad_catch_var.refGrad().?.protect();
-            }
-            defer for (grad_catch_vars) |grad_catch_var| {
-                grad_catch_var.refGrad().?.unprotect();
-            };
-
-            self.destroyFunctions();
-            self.functions.clearRetainingCapacity();
         }
     }
 };

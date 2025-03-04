@@ -78,47 +78,43 @@ pub fn main() !void {
     try v1.fill(std.math.pi / 4.0, &stream);
 
     var x = try context.createVariable(F, v1.move(), "x");
-    defer x.destroy();
-    x.protect();
 
     var y = try taylorSin(
         F,
-        try taylorSin(
-            F,
-            x,
-            1e-40,
-        ),
+        x,
         1e-40,
     );
-    defer y.destroy();
-    y.protect();
-    y.setName("y");
 
     try y.saveDot("graph/graph.dot");
 
-    try y.backward(F, &.{x});
+    try y.backward();
 
     x.refGrad().?.setName("x_grad");
     y.refGrad().?.setName("y_grad");
 
     try x.refGrad().?.saveDot("graph/graph_grad.dot");
 
-    // TODO: at backward don't free all function -> left grad... -> function -> variable like pool + list
-    try x.refGrad().?.backward(F, &.{y.refGrad().?});
-    try y.refGrad().?.refGrad().?.saveDot("graph/graph_grad_grad.dot");
+    const gx = x.refGrad().?;
+    x.setGrad(null);
+    try gx.backward();
+    try x.refGrad().?.saveDot("graph/graph_grad_grad.dot");
 
     try stream.sync();
 
     var host_y = try y.asUntaggedConst(F).data.toHost(allocator, &stream);
     defer host_y.deinit(allocator);
 
-    var host_ggy = try y.refGrad().?.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_ggy.deinit(allocator);
+    var host_gx = try gx.asUntaggedConst(F).data.toHost(allocator, &stream);
+    defer host_gx.deinit(allocator);
+
+    var host_ggx = try x.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
+    defer host_ggx.deinit(allocator);
 
     try stream.sync();
 
     std.debug.print("{d}", .{host_y});
-    std.debug.print("{d}", .{host_ggy});
+    std.debug.print("{d}", .{host_gx});
+    std.debug.print("{d}", .{host_ggx});
     std.debug.print("{}\n", .{context.countVariable()});
     // std.debug.print("{}\n", .{y.calcLen()});
     // std.debug.print("{}\n", .{x.refGradConst().?.calcLen()});

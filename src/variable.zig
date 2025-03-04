@@ -73,6 +73,15 @@ pub fn Variable(comptime T: type) type {
         pub fn release(self: *Self) void {
             if (!self.protected) {
                 self.destroy();
+            } else {
+                if (self.prev) |prev| {
+                    prev.setNext(self.next);
+                }
+                if (self.next) |next| {
+                    next.setPrev(self.prev);
+                }
+                self.prev = null;
+                self.next = null;
             }
         }
 
@@ -105,7 +114,7 @@ pub fn Variable(comptime T: type) type {
             return self.grad orelse return null;
         }
 
-        pub fn setGrad(self: *Self, grad: *TaggedVar) void {
+        pub fn setGrad(self: *Self, grad: ?*TaggedVar) void {
             self.grad = grad;
         }
 
@@ -245,7 +254,7 @@ pub const TaggedVar = union(enum) {
         }
     }
 
-    pub fn setGrad(self: *TaggedVar, grad: *TaggedVar) void {
+    pub fn setGrad(self: *TaggedVar, grad: ?*TaggedVar) void {
         switch (self.*) {
             inline else => |*v| v.setGrad(grad),
         }
@@ -349,11 +358,16 @@ pub const TaggedVar = union(enum) {
 
     pub fn backward(
         self: *TaggedVar,
-        comptime T: type,
-        grad_catch_vars: []const *TaggedVar,
+        // comptime T: type,
     ) !void {
+        // switch (self.*) {
+        //     inline else => try self.getContext().backward(T, self),
+        // }
         switch (self.*) {
-            inline else => try self.getContext().backward(T, self, grad_catch_vars),
+            .bf16 => try self.getContext().backward(BF16, self),
+            .f16 => try self.getContext().backward(f16, self),
+            .f32 => try self.getContext().backward(f32, self),
+            .f64 => try self.getContext().backward(f64, self),
         }
     }
 };
