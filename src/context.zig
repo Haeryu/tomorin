@@ -28,10 +28,11 @@ pub const Context = struct {
     stream: *const Stream,
     allocator: std.mem.Allocator,
 
-    functions: std.ArrayList(Function),
+    functions: std.heap.MemoryPool(Function),
     tagged_vars: std.heap.MemoryPool(TaggedVar),
     options: ContextOptions,
 
+    func_chain: ?*Function,
     var_chain: ?*TaggedVar,
 
     const func_max_out = 3;
@@ -46,10 +47,11 @@ pub const Context = struct {
             .allocator = allocator,
             .cuda_context = cuda_context,
             .stream = stream,
-            .functions = try std.ArrayList(Function).initCapacity(allocator, options.init_func_capacity),
+            .functions = try std.heap.MemoryPool(Function).initPreheated(allocator, options.init_func_capacity),
             .tagged_vars = try std.heap.MemoryPool(TaggedVar).initPreheated(allocator, options.init_var_capacity),
             .options = options,
             .var_chain = null,
+            .func_chain = null,
         };
     }
 
@@ -61,8 +63,9 @@ pub const Context = struct {
     }
 
     pub fn destroyFunctions(self: *Context) void {
-        for (self.functions.items) |*f| {
-            f.destroy();
+        while (self.func_chain) |head| {
+            self.func_chain = head.next;
+            head.destroy();
         }
     }
 
@@ -114,25 +117,37 @@ pub const Context = struct {
         return count;
     }
 
+    pub fn countFunction(self: *const Context) usize {
+        var iter = self.func_chain;
+        var count: usize = 0;
+
+        while (iter) |func| : (iter = func.next) {
+            count += 1;
+        }
+
+        return count;
+    }
+
     pub fn resetVarChain(self: *Context) void {
         self.var_chain = null;
     }
 
-    pub fn registerFunction(self: *Context, func: Function) !FuncKey {
-        try self.functions.append(func);
-
-        return .{
-            .index = self.functions.items.len - 1,
-            .context = self,
-        };
+    pub fn resetFuncChain(self: *Context) void {
+        self.func_chain = null;
     }
 
-    pub fn refFunction(self: *Context, key: FuncKey) *Function {
-        return &self.functions.items[key.index];
-    }
+    pub fn registerFunction(self: *Context, func: Function) !*Function {
+        const ptr = try self.functions.create();
+        ptr.* = func;
 
-    pub fn refFunctionConst(self: *const Context, key: FuncKey) *const Function {
-        return &self.functions.items[key.index];
+        if (self.func_chain) |head| {
+            ptr.next = head;
+            head.prev = ptr;
+        }
+
+        self.func_chain = ptr;
+
+        return ptr;
     }
 
     pub fn backward(
@@ -169,30 +184,5 @@ pub const Context = struct {
             try func.backward();
             try func.enqueue(&function_queue, &seen_set);
         }
-    }
-};
-
-pub const FuncKey = struct {
-    index: usize,
-    context: *Context,
-
-    pub fn getGeneration(self: FuncKey) usize {
-        return self.context.refFunction(self).getGeneration();
-    }
-
-    pub fn backward(self: FuncKey) !void {
-        try self.context.refFunction(self).backward();
-    }
-
-    pub fn enqueue(self: FuncKey, function_queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
-        try self.context.refFunction(self).enqueue(function_queue, seen_set);
-    }
-
-    pub fn ref(self: FuncKey) *Function {
-        return self.context.refFunction(self);
-    }
-
-    pub fn refConst(self: FuncKey) *const Function {
-        return self.context.refFunctionConst(self);
     }
 };

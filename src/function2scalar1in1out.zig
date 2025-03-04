@@ -7,7 +7,6 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
-const FuncKey = @import("context.zig").FuncKey;
 
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
@@ -25,11 +24,11 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
 
-        pub fn create(context: *Context, scalar1: Self.Scalar1, scalar2: Self.Scalar2) !FuncKey {
+        pub fn create(context: *Context, scalar1: Self.Scalar1, scalar2: Self.Scalar2) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
-            const self_key = try context.registerFunction(.{
+            const func_ptr = try context.registerFunction(.{
                 .ptr = self,
                 .vtable = &.{
                     .forward = &Base.forwardDecorated,
@@ -47,16 +46,17 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                 .scalar1 = scalar1,
                 .scalar2 = scalar2,
                 .base = .{
-                    .self_key = self_key,
+                    .func_ptr = func_ptr,
+                    .context = context,
                 },
             };
 
-            return self_key;
+            return func_ptr;
         }
 
         pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const allocator = self.base.self_key.context.allocator;
+            const allocator = self.base.context.allocator;
             const in = if (Self.ref_in_at_back) try self.in.?.getDotAlloc() else "";
             defer if (Self.ref_in_at_back) allocator.free(in);
 
@@ -130,7 +130,7 @@ pub fn ScaleShift(comptime T: type) type {
         const Self = ScaleShift(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.self_key.context;
+            const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
             errdefer y.deinitAsync(context.stream);
 

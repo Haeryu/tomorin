@@ -116,6 +116,7 @@ pub fn main() !void {
     std.debug.print("{d}", .{host_gx});
     std.debug.print("{d}", .{host_ggx});
     std.debug.print("{}\n", .{context.countVariable()});
+    std.debug.print("{}\n", .{context.countFunction()});
     // std.debug.print("{}\n", .{y.calcLen()});
     // std.debug.print("{}\n", .{x.refGradConst().?.calcLen()});
     // std.debug.print("{}\n", .{y.refGrad().?.refGrad().?.calcLen()});

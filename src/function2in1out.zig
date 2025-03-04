@@ -7,7 +7,6 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
-const FuncKey = @import("context.zig").FuncKey;
 
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
@@ -25,11 +24,11 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator2in1outBase(Self);
 
-        pub fn create(context: *Context) !FuncKey {
+        pub fn create(context: *Context) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
-            const self_key = try context.registerFunction(.{
+            const func_ptr = try context.registerFunction(.{
                 .ptr = self,
                 .vtable = &.{
                     .forward = &Base.forwardDecorated,
@@ -46,22 +45,23 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                 .in2 = null,
                 .out = null,
                 .base = .{
-                    .self_key = self_key,
+                    .func_ptr = func_ptr,
+                    .context = context,
                 },
             };
 
-            return self_key;
+            return func_ptr;
         }
 
         pub fn getDotAlloc(ctx: *anyopaque) ![]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const allocator = self.base.self_key.context.allocator;
+            const allocator = self.base.context.allocator;
             const in1 = if (Self.ref_in1_at_back) try self.in1.?.getDotAlloc() else "";
             defer if (Self.ref_in1_at_back) allocator.free(in1);
             const in2 = if (Self.ref_in2_at_back) try self.in2.?.getDotAlloc() else "";
             defer if (Self.ref_in2_at_back) allocator.free(in2);
 
-            return try std.fmt.allocPrint(self.base.self_key.context.allocator,
+            return try std.fmt.allocPrint(self.base.context.allocator,
                 \\{} [label="{s}", color=lightblue, style=filled, shape=box]
                 \\{} -> {}
                 \\{} -> {}
@@ -114,7 +114,7 @@ pub fn Add(comptime T: type) type {
         const Self = Add(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.self_key.context;
+            const context = self.base.context;
             if (x1 == x2) {
                 var new_x1 = try x1.cloneAsync(context.stream);
                 defer new_x1.deinitAsync(context.stream);
@@ -162,7 +162,7 @@ pub fn Sub(comptime T: type) type {
         const Self = Sub(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.self_key.context;
+            const context = self.base.context;
             if (x1 == x2) {
                 var new_x1 = try x1.cloneAsync(context.stream);
                 defer new_x1.deinitAsync(context.stream);
@@ -206,7 +206,7 @@ pub fn Mul(comptime T: type) type {
         const Self = Mul(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.self_key.context;
+            const context = self.base.context;
             var y = try x1.cloneAsync(context.stream);
             errdefer y.deinitAsync(context.stream);
 
@@ -244,7 +244,7 @@ pub fn Div(comptime T: type) type {
         const Self = Div(T);
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.self_key.context;
+            const context = self.base.context;
             var y = try x1.cloneAsync(context.stream);
             errdefer y.deinitAsync(context.stream);
 

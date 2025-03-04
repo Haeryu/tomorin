@@ -7,7 +7,6 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
-const FuncKey = @import("context.zig").FuncKey;
 
 const Variable = @import("variable.zig").Variable;
 const TaggedVar = @import("variable.zig").TaggedVar;
@@ -19,19 +18,22 @@ pub const Function = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    prev: ?*Function = null,
+    next: ?*Function = null,
+
     pub const max_out = 3;
 
     pub const Queue = std.PriorityQueue(
-        FuncKey,
+        *Function,
         void,
         struct {
-            fn comp(_: void, a: FuncKey, b: FuncKey) std.math.Order {
+            fn comp(_: void, a: *Function, b: *Function) std.math.Order {
                 return std.math.order(b.getGeneration(), a.getGeneration());
             }
         }.comp,
     );
 
-    pub const SeenSet = std.AutoHashMap(FuncKey, void);
+    pub const SeenSet = std.AutoHashMap(*Function, void);
 
     const VTable = struct {
         destroy: *const fn (ctx: *anyopaque) void,
@@ -48,6 +50,15 @@ pub const Function = struct {
     };
 
     pub fn destroy(self: *Function) void {
+        if (self.prev) |prev| {
+            prev.next = self.next;
+        }
+        if (self.next) |next| {
+            next.prev = self.prev;
+        }
+        self.prev = null;
+        self.next = null;
+
         self.vtable.destroy(self.ptr);
     }
 
@@ -73,7 +84,8 @@ pub const Function = struct {
 };
 
 pub const FunctionBase = struct {
-    self_key: FuncKey,
+    context: *Context,
+    func_ptr: *Function,
     generation: usize = 0,
 };
 
@@ -111,7 +123,7 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
     return struct {
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const context = self.base.self_key.context;
+            const context = self.base.context;
 
             // if (self.in) |in| {
             //     // in.release();
@@ -133,7 +145,7 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
         pub fn forwardDecorated(ctx: *anyopaque, args: []*TaggedVar, out: []?*TaggedVar) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
-            const context = self.base.self_key.context;
+            const context = self.base.context;
 
             self.in = args[0];
 
@@ -144,8 +156,7 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
 
             self.base.generation = self.in.?.getGeneration();
             self.out.?.asUntagged(Self.Out).setCreator(
-                self.base.self_key,
-                self.base.generation,
+                self.base.func_ptr,
             );
 
             out[0] = self.out.?;
@@ -181,11 +192,11 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
     };
 }
 
-pub fn makefunc1in1outBase(funckey: FuncKey, x: *TaggedVar) !*TaggedVar {
+pub fn makefunc1in1outBase(func_ptr: *Function, x: *TaggedVar) !*TaggedVar {
     var out: [Function.max_out]?*TaggedVar = .{null} ** Function.max_out;
     var in: [1]*TaggedVar = .{x};
 
-    try x.getContext().refFunction(funckey).forward(&in, out[0..1]);
+    try func_ptr.forward(&in, out[0..1]);
 
     // if (x.getContextConst().options.front_only) {
     //     out[0].?.protect();
@@ -201,7 +212,7 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
     return struct {
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const context = self.base.self_key.context;
+            const context = self.base.context;
 
             // if (self.in1) |in1| {
             //     // in1.release();
@@ -227,7 +238,7 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
         pub fn forwardDecorated(ctx: *anyopaque, args: []*TaggedVar, out: []?*TaggedVar) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
-            const context = self.base.self_key.context;
+            const context = self.base.context;
 
             self.in1 = args[0];
 
@@ -243,8 +254,7 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
 
             self.base.generation = @max(self.in1.?.getGeneration(), self.in2.?.getGeneration());
             self.out.?.asUntagged(Self.Out).setCreator(
-                self.base.self_key,
-                self.base.generation,
+                self.base.func_ptr,
             );
 
             out[0] = self.out.?;
@@ -292,14 +302,14 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
     };
 }
 
-pub fn makefunc1in2outBase(funckey: FuncKey, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
+pub fn makefunc1in2outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
     std.debug.assert(x1.getContextConst() == x2.getContextConst());
 
     var out: [Function.max_out]?*TaggedVar = .{null} ** Function.max_out;
 
     var in: [2]*TaggedVar = .{ x1, x2 };
 
-    try x1.getContext().refFunction(funckey).forward(&in, out[0..1]);
+    try func_ptr.forward(&in, out[0..1]);
 
     if (x1.getContextConst().options.front_only) {
         out[0].?.protect();

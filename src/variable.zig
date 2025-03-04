@@ -7,7 +7,6 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
-const FuncKey = @import("context.zig").FuncKey;
 
 const Function = @import("function.zig").Function;
 
@@ -17,7 +16,7 @@ pub fn Variable(comptime T: type) type {
         name: ?[]const u8 = null,
         generation: usize = 0,
         grad: ?*TaggedVar = null,
-        creator: ?FuncKey = null,
+        creator: ?*Function = null,
         context: *Context,
         protected: bool = false,
 
@@ -93,9 +92,9 @@ pub fn Variable(comptime T: type) type {
             self.protected = false;
         }
 
-        pub fn setCreator(self: *Self, creator: FuncKey, creator_generation: usize) void {
+        pub fn setCreator(self: *Self, creator: *Function) void {
             self.creator = creator;
-            self.generation = creator_generation + 1;
+            self.generation = creator.getGeneration() + 1;
         }
 
         pub fn resetCreator(self: *Self) void {
@@ -212,7 +211,7 @@ pub const TaggedVar = union(enum) {
         };
     }
 
-    pub fn getCreator(self: *const TaggedVar) ?FuncKey {
+    pub fn getCreator(self: *const TaggedVar) ?*Function {
         return switch (self.*) {
             inline else => |*v| v.creator,
         };
@@ -333,7 +332,7 @@ pub const TaggedVar = union(enum) {
 
                 try seen_set.put(creator, {});
 
-                const func_str = try creator.ref().getDotAlloc();
+                const func_str = try creator.getDotAlloc();
                 defer self.getContextConst().allocator.free(func_str);
 
                 try writer.writeAll(func_str);
