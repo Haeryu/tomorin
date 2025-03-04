@@ -369,4 +369,10 @@ pub const TaggedVar = union(enum) {
             .f64 => try self.getContext().backward(f64, self),
         }
     }
+
+    pub fn detatchGrad(self: *TaggedVar) *TaggedVar {
+        const grad = self.refGrad();
+        self.setGrad(null);
+        return grad.?;
+    }
 };

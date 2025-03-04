@@ -5,7 +5,6 @@ const GPUTensor = tomo.tensor.GPUTensor;
 
 const Stream = tomo.stream.Stream;
 const CudaContext = tomo.cuda_context.CudaContext;
-const LevelStack = @import("stack.zig").LevelStack;
 const Function = @import("function.zig").Function;
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
@@ -13,6 +12,8 @@ const Pool = @import("nina").container.pool.Pool;
 const BF16 = tomo.BF16;
 
 const function = @import("function.zig");
+
+const Snapshot = @import("snapshot.zig").Snapshot;
 
 pub const ContextOptions = struct {
     aggressive_release: bool = false,
@@ -62,18 +63,27 @@ pub const Context = struct {
         self.tagged_vars.deinit();
     }
 
-    pub fn destroyFunctions(self: *Context) void {
-        while (self.func_chain) |head| {
-            self.func_chain = head.next;
+    pub fn destroyFunctionsChain(chain: ?*Function) void {
+        var mut_chain = chain;
+        while (mut_chain) |head| {
+            mut_chain = head.next;
+            head.destroy();
+        }
+    }
+    pub fn destroyVariablesChain(chain: ?*TaggedVar) void {
+        var mut_chain = chain;
+        while (mut_chain) |head| {
+            mut_chain = head.getNext();
             head.destroy();
         }
     }
 
+    pub fn destroyFunctions(self: *Context) void {
+        destroyFunctionsChain(self.func_chain);
+    }
+
     pub fn destroyVariables(self: *Context) void {
-        while (self.var_chain) |head| {
-            self.var_chain = head.getNext();
-            head.destroy();
-        }
+        destroyVariablesChain(self.var_chain);
     }
 
     pub fn createVariable(
@@ -106,7 +116,7 @@ pub const Context = struct {
         return ptr;
     }
 
-    pub fn countVariable(self: *const Context) usize {
+    pub fn countVariables(self: *const Context) usize {
         var iter = self.var_chain;
         var count: usize = 0;
 
@@ -117,7 +127,7 @@ pub const Context = struct {
         return count;
     }
 
-    pub fn countFunction(self: *const Context) usize {
+    pub fn countFunctions(self: *const Context) usize {
         var iter = self.func_chain;
         var count: usize = 0;
 
@@ -159,7 +169,6 @@ pub const Context = struct {
 
         const variable_untagged = variable.asUntagged(T);
         const creator = variable.getCreator() orelse return error.NoCreator;
-        self.resetVarChain();
 
         var ones = try tomo.tensor.GPUTensor(T).initAsync(variable_untagged.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);
@@ -184,5 +193,15 @@ pub const Context = struct {
             try func.backward();
             try func.enqueue(&function_queue, &seen_set);
         }
+    }
+
+    pub fn takeSnapshot(self: *const Context) Snapshot {
+        return .{
+            .start_var = null,
+            .end_var = self.var_chain,
+            .start_func = null,
+            .end_func = self.func_chain,
+            .context = self,
+        };
     }
 };

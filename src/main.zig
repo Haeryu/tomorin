@@ -79,25 +79,41 @@ pub fn main() !void {
 
     var x = try context.createVariable(F, v1.move(), "x");
 
+    var snapshot = context.takeSnapshot();
+
     var y = try taylorSin(
         F,
         x,
-        1e-40,
+        1e-7,
     );
+
+    snapshot.record();
+
+    std.debug.print("snapshot {}\n", .{snapshot.countVariables()});
+    std.debug.print("snapshot {}\n", .{snapshot.countFunctions()});
 
     try y.saveDot("graph/graph.dot");
 
+    var gsnapshot = context.takeSnapshot();
     try y.backward();
+    gsnapshot.record();
 
     x.refGrad().?.setName("x_grad");
     y.refGrad().?.setName("y_grad");
 
     try x.refGrad().?.saveDot("graph/graph_grad.dot");
 
-    const gx = x.refGrad().?;
-    x.setGrad(null);
+    std.debug.print("gsnapshot {}\n", .{gsnapshot.countVariables()});
+    std.debug.print("gsnapshot {}\n", .{gsnapshot.countFunctions()});
+
+    const gx = x.detatchGrad();
+    var ggsnapshot = context.takeSnapshot();
     try gx.backward();
+    ggsnapshot.record();
     try x.refGrad().?.saveDot("graph/graph_grad_grad.dot");
+
+    std.debug.print("ggsnapshot {}\n", .{ggsnapshot.countVariables()});
+    std.debug.print("ggsnapshot {}\n", .{ggsnapshot.countFunctions()});
 
     try stream.sync();
 
@@ -115,8 +131,8 @@ pub fn main() !void {
     std.debug.print("{d}", .{host_y});
     std.debug.print("{d}", .{host_gx});
     std.debug.print("{d}", .{host_ggx});
-    std.debug.print("{}\n", .{context.countVariable()});
-    std.debug.print("{}\n", .{context.countFunction()});
+    std.debug.print("{}\n", .{context.countVariables()});
+    std.debug.print("{}\n", .{context.countFunctions()});
     // std.debug.print("{}\n", .{y.calcLen()});
     // std.debug.print("{}\n", .{x.refGradConst().?.calcLen()});
     // std.debug.print("{}\n", .{y.refGrad().?.refGrad().?.calcLen()});
