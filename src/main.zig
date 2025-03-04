@@ -50,7 +50,6 @@ fn taylorSin(comptime T: type, x: *TaggedVar, threshold: f32) !*TaggedVar {
     return y;
 }
 
-// TODO: seperate common function in XXXXBase
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -64,7 +63,7 @@ pub fn main() !void {
     defer cuda_context.deinit();
 
     var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
-        .aggressive_release = true,
+        .aggressive_release = false,
         .init_func_capacity = 0,
         .init_var_capacity = 0,
         .verbose_dot = true,
@@ -82,29 +81,46 @@ pub fn main() !void {
     defer x.destroy();
     x.protect();
 
-    var y = try taylorSin(F, try taylorSin(F, try taylorSin(F, try taylorSin(F, try taylorSin(F, try taylorSin(F, x, 1e-40), 1e-40), 1e-40), 1e-40), 1e-40), 1e-40);
+    var y = try taylorSin(
+        F,
+        try taylorSin(
+            F,
+            x,
+            1e-40,
+        ),
+        1e-40,
+    );
     defer y.destroy();
     y.protect();
     y.setName("y");
 
     try y.saveDot("graph/graph.dot");
 
-    try context.backward(F, y, &.{x});
+    try y.backward(F, &.{x});
 
     x.refGrad().?.setName("x_grad");
     y.refGrad().?.setName("y_grad");
 
-    //try x.refGrad().?.saveDot("graph/graph_grad.dot");
+    try x.refGrad().?.saveDot("graph/graph_grad.dot");
+
+    // TODO: at backward don't free all function -> left grad... -> function -> variable like pool + list
+    try x.refGrad().?.backward(F, &.{y.refGrad().?});
+    // try y.refGrad().?.refGrad().?.saveDot("graph/graph_grad_grad.dot");
 
     try stream.sync();
 
     var host_y = try y.asUntaggedConst(F).data.toHost(allocator, &stream);
     defer host_y.deinit(allocator);
 
+    var host_ggy = try y.refGrad().?.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
+    defer host_ggy.deinit(allocator);
+
     try stream.sync();
 
     std.debug.print("{d}", .{host_y});
-    std.debug.print("{}\n", .{context.variable_count});
-    std.debug.print("{}\n", .{y.calcLen()});
-    std.debug.print("{}\n", .{x.refGradConst().?.calcLen()});
+    std.debug.print("{d}", .{host_ggy});
+    std.debug.print("{}\n", .{context.countVariable()});
+    // std.debug.print("{}\n", .{y.calcLen()});
+    // std.debug.print("{}\n", .{x.refGradConst().?.calcLen()});
+    // std.debug.print("{}\n", .{y.refGrad().?.refGrad().?.calcLen()});
 }

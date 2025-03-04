@@ -20,7 +20,9 @@ pub fn Variable(comptime T: type) type {
         creator: ?FuncKey = null,
         context: *Context,
         protected: bool = false,
-        before: ?*TaggedVar = null,
+
+        prev: ?*TaggedVar = null,
+        next: ?*TaggedVar = null,
 
         const Self = @This();
 
@@ -32,28 +34,40 @@ pub fn Variable(comptime T: type) type {
             self.data.deinitAsync(self.context.stream);
             self.data.ptr = null;
 
-            if (self.before) |before| {
-                before.setBefore(self.before);
+            if (self.prev) |prev| {
+                prev.setNext(self.next);
             }
-            self.before = null;
+            if (self.next) |next| {
+                next.setPrev(self.prev);
+            }
+            self.prev = null;
+            self.next = null;
 
             self.creator = null;
 
-            if (self.context.options.count_variables) {
-                self.context.variable_count -= 1;
-            }
+            // if (self.context.options.count_variables) {
+            //     self.context.variable_count -= 1;
+            // }
             if (self.grad) |grad| {
                 grad.release();
             }
             self.grad = null;
         }
 
-        pub fn setBefore(self: *Self, before: ?*TaggedVar) void {
-            self.before = before;
+        pub fn setPrev(self: *Self, prev: ?*TaggedVar) void {
+            self.prev = prev;
         }
 
-        pub fn getBefore(self: *const Self) ?*TaggedVar {
-            return self.before;
+        pub fn setNext(self: *Self, next: ?*TaggedVar) void {
+            self.next = next;
+        }
+
+        pub fn getPrev(self: *const Self) ?*TaggedVar {
+            return self.prev;
+        }
+
+        pub fn getNext(self: *const Self) ?*TaggedVar {
+            return self.next;
         }
 
         pub fn release(self: *Self) void {
@@ -129,15 +143,15 @@ pub fn Variable(comptime T: type) type {
             }
         }
 
-        pub fn calcLen(self: *const Self) usize {
-            var count: usize = 1;
-            var now = self.getBefore();
-            while (now) |nonnull_now| : (now = nonnull_now.getBefore()) {
-                count += 1;
-            }
+        // pub fn calcLen(self: *const Self) usize {
+        //     var count: usize = 1;
+        //     var now = self.getPrev();
+        //     while (now) |nonnull_now| : (now = nonnull_now.getPrev()) {
+        //         count += 1;
+        //     }
 
-            return count;
-        }
+        //     return count;
+        // }
     };
 }
 
@@ -255,12 +269,6 @@ pub const TaggedVar = union(enum) {
         }
     }
 
-    pub fn setBefore(self: *TaggedVar, before: ?*TaggedVar) void {
-        switch (self.*) {
-            inline else => |*v| v.setBefore(before),
-        }
-    }
-
     pub fn getContext(self: *TaggedVar) *Context {
         return switch (self.*) {
             inline else => |*v| v.context,
@@ -273,10 +281,28 @@ pub const TaggedVar = union(enum) {
         };
     }
 
-    pub fn getBefore(self: *const TaggedVar) ?*TaggedVar {
+    pub fn getPrev(self: *const TaggedVar) ?*TaggedVar {
         return switch (self.*) {
-            inline else => |*v| v.getBefore(),
+            inline else => |*v| v.getPrev(),
         };
+    }
+
+    pub fn setPrev(self: *TaggedVar, prev: ?*TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.setPrev(prev),
+        }
+    }
+
+    pub fn getNext(self: *const TaggedVar) ?*TaggedVar {
+        return switch (self.*) {
+            inline else => |*v| v.getNext(),
+        };
+    }
+
+    pub fn setNext(self: *TaggedVar, next: ?*TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| v.setNext(next),
+        }
     }
 
     pub fn writeFlowDot(self: *const TaggedVar, writer: anytype) !void {
@@ -287,7 +313,7 @@ pub const TaggedVar = union(enum) {
 
         try writer.writeAll("digraph g{\n");
 
-        while (now) |nonnull_now| : (now = nonnull_now.getBefore()) {
+        while (now) |nonnull_now| : (now = nonnull_now.getPrev()) {
             const dot_str = try nonnull_now.getDotAlloc();
             defer self.getContextConst().allocator.free(dot_str);
 
@@ -315,9 +341,19 @@ pub const TaggedVar = union(enum) {
         try self.writeFlowDot(file.writer());
     }
 
-    pub fn calcLen(self: *const TaggedVar) usize {
-        return switch (self.*) {
-            inline else => |*v| v.calcLen(),
-        };
+    // pub fn calcLen(self: *const TaggedVar) usize {
+    //     return switch (self.*) {
+    //         inline else => |*v| v.calcLen(),
+    //     };
+    // }
+
+    pub fn backward(
+        self: *TaggedVar,
+        comptime T: type,
+        grad_catch_vars: []const *TaggedVar,
+    ) !void {
+        switch (self.*) {
+            inline else => try self.getContext().backward(T, self, grad_catch_vars),
+        }
     }
 };

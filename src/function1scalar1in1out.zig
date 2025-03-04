@@ -225,7 +225,11 @@ pub fn Pow(comptime T: type) type {
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             const x_cmin1 = try pow(T, self.in.?, self.scalar - 1);
-            const c_x_cmin1 = try scale(T, x_cmin1, @floatFromInt(self.scalar));
+            const c_x_cmin1 = try scale(
+                T,
+                x_cmin1,
+                if (T == BF16) BF16.fromF32(@floatFromInt(self.scalar)) else @floatFromInt(self.scalar),
+            );
             return try mul(T, c_x_cmin1, gy);
         }
     };

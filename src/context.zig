@@ -18,8 +18,8 @@ pub const ContextOptions = struct {
     verbose_dot: bool = false,
     init_var_capacity: usize = 0,
     init_func_capacity: usize = 0,
-    count_variables: bool = true,
     front_only: bool = false,
+    enable_multi_backprop: bool = true,
 };
 
 pub const Context = struct {
@@ -32,8 +32,6 @@ pub const Context = struct {
     options: ContextOptions,
 
     var_chain: ?*TaggedVar,
-
-    variable_count: usize = 0,
 
     const func_max_out = 3;
 
@@ -57,15 +55,20 @@ pub const Context = struct {
     pub fn deinit(self: *Context) void {
         self.destroyFunctions();
         self.functions.deinit();
-        if (self.options.count_variables) {
-            std.debug.assert(self.variable_count == 0);
-        }
+        self.destroyVariables();
         self.tagged_vars.deinit();
     }
 
     pub fn destroyFunctions(self: *Context) void {
         for (self.functions.items) |*f| {
             f.destroy();
+        }
+    }
+
+    pub fn destroyVariables(self: *Context) void {
+        while (self.var_chain) |head| {
+            self.var_chain = head.getNext();
+            head.destroy();
         }
     }
 
@@ -80,7 +83,8 @@ pub const Context = struct {
             .name = name,
             .context = self,
             .protected = false,
-            .before = null,
+            .prev = null,
+            .next = null,
         };
 
         const tagged = TaggedVar.init(T, variable);
@@ -88,14 +92,25 @@ pub const Context = struct {
         const ptr = try self.tagged_vars.create();
         ptr.* = tagged;
 
-        if (self.options.count_variables) {
-            self.variable_count += 1;
+        if (self.var_chain) |head| {
+            ptr.setNext(head);
+            head.setPrev(ptr);
         }
 
-        ptr.setBefore(self.var_chain);
         self.var_chain = ptr;
 
         return ptr;
+    }
+
+    pub fn countVariable(self: *const Context) usize {
+        var iter = self.var_chain;
+        var count: usize = 0;
+
+        while (iter) |variable| : (iter = variable.getNext()) {
+            count += 1;
+        }
+
+        return count;
     }
 
     pub fn resetVarChain(self: *Context) void {

@@ -113,15 +113,15 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
 
-            if (self.in) |in| {
-                in.release();
-                self.in = null;
-            }
+            // if (self.in) |in| {
+            //     // in.release();
+            // }
+            self.in = null;
             if (self.out) |out| {
-                out.release();
+                //out.release();
                 out.resetCreator();
-                self.out = null;
             }
+            self.out = null;
             context.allocator.destroy(self);
         }
 
@@ -203,19 +203,19 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.self_key.context;
 
-            if (self.in1) |in1| {
-                in1.release();
-                self.in1 = null;
-            }
-            if (self.in2) |in2| {
-                in2.release();
-                self.in2 = null;
-            }
+            // if (self.in1) |in1| {
+            //     // in1.release();
+            // }
+            self.in1 = null;
+            // if (self.in2) |in2| {
+            //     // in2.release();
+            // }
+            self.in2 = null;
             if (self.out) |out| {
-                out.release();
+                // out.release();
                 out.resetCreator();
-                self.out = null;
             }
+            self.out = null;
             context.allocator.destroy(self);
         }
 
