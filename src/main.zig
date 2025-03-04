@@ -105,7 +105,7 @@ pub fn main() !void {
 
     // TODO: at backward don't free all function -> left grad... -> function -> variable like pool + list
     try x.refGrad().?.backward(F, &.{y.refGrad().?});
-    // try y.refGrad().?.refGrad().?.saveDot("graph/graph_grad_grad.dot");
+    try y.refGrad().?.refGrad().?.saveDot("graph/graph_grad_grad.dot");
 
     try stream.sync();
 

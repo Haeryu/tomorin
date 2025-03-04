@@ -313,7 +313,7 @@ pub const TaggedVar = union(enum) {
 
         try writer.writeAll("digraph g{\n");
 
-        while (now) |nonnull_now| : (now = nonnull_now.getPrev()) {
+        while (now) |nonnull_now| : (now = nonnull_now.getNext()) {
             const dot_str = try nonnull_now.getDotAlloc();
             defer self.getContextConst().allocator.free(dot_str);
 
