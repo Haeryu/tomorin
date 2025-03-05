@@ -17,8 +17,12 @@ const tanh = tomorin.function.tanh;
 const reshape = tomorin.function.reshape;
 const transpose = tomorin.function.transpose;
 const sumTo = tomorin.function.sumTo;
+const broadcastTo = tomorin.function.broadcastTo;
 const matmul = tomorin.function.matmul;
+const meanSquaredError = tomorin.function.meanSquaredError;
 const TaggedVar = tomorin.variable.TaggedVar;
+
+const F = f32;
 
 fn factorial(x: f64) f64 {
     if (x == 0) {
@@ -74,8 +78,6 @@ fn example() !void {
     });
     defer context.deinit();
 
-    const F = f64;
-
     var v1 = try tomo.tensor.GPUTensor(F).initAsync(&.{1}, &stream);
     errdefer v1.deinitAsync(&stream);
     try v1.fill(std.math.pi / 4.0, &stream);
@@ -107,7 +109,11 @@ fn example() !void {
     }
 }
 
-pub fn main() !void {
+fn predict(comptime T: type, x: *TaggedVar, w: *TaggedVar, b: *TaggedVar) !*TaggedVar {
+    return try add(T, try matmul(T, x, w), try broadcastTo(T, b, &.{ 100, 1 }));
+}
+
+fn example2() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
@@ -126,35 +132,82 @@ pub fn main() !void {
     });
     defer context.deinit();
 
-    const F = f32;
+    var xv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
+    errdefer xv.deinitAsync(&stream);
+    try xv.fillUniform(&cuda_context, &stream);
 
-    var v1 = try tomo.tensor.GPUTensor(F).initAsync(&.{ 2, 3 }, &stream);
-    errdefer v1.deinitAsync(&stream);
-    try v1.writeFromHostAsync(&.{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 }, 0, &stream);
+    var noisev = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
+    errdefer noisev.deinitAsync(&stream);
+    try noisev.fillUniform(&cuda_context, &stream);
 
-    var v2 = try tomo.tensor.GPUTensor(F).initAsync(&.{ 3, 4 }, &stream);
-    errdefer v2.deinitAsync(&stream);
-    try v2.writeFromHostAsync(&.{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 }, 0, &stream);
+    var wv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, 1 }, &stream);
+    errdefer wv.deinitAsync(&stream);
+    try wv.fill(0.0, &stream);
 
-    var x1 = try context.createVariable(F, v1.move(), "x1");
-    var x2 = try context.createVariable(F, v2.move(), "x2");
+    var bv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, 1 }, &stream);
+    errdefer bv.deinitAsync(&stream);
+    try bv.fill(0.0, &stream);
 
-    //var y = try reshape(F, x, &.{6});
-    var y = try matmul(F, x1, x2);
+    const x = try context.createVariable(F, xv.move(), "x");
+    const noise = try context.createVariable(F, noisev.move(), "noise");
+    const y = try add(F, try scaleShift(F, x, 2.0, 5.0), noise);
 
-    try y.backward();
+    const w = try context.createVariable(F, wv.move(), "w");
+    const b = try context.createVariable(F, bv.move(), "w");
 
-    var host_y = try y.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_y.deinit(allocator);
+    const lr = 0.1;
+    const iters = 100;
 
-    var host_gx1 = try x1.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_gx1.deinit(allocator);
+    for (0..iters) |_| {
+        const y_pred = try predict(F, x, w, b);
+        const loss = try meanSquaredError(F, y, y_pred);
 
-    var host_gx2 = try x2.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_gx2.deinit(allocator);
+        try loss.backward();
+        const gw = w.detatchGrad();
+        const gb = b.detatchGrad();
 
-    std.debug.print("{d}", .{host_y});
-    std.debug.print("{d}", .{host_gx2});
+        var gw_data = try gw.asUntagged(F).data.cloneAsync(&stream);
+        defer gw_data.deinitAsync(&stream);
 
-    //    try example();
+        var dgw = try gw_data.scale(lr, &cuda_context, &stream);
+        defer dgw.deinitAsync(&stream);
+
+        var gb_data = try gb.asUntagged(F).data.cloneAsync(&stream);
+        defer gb_data.deinitAsync(&stream);
+
+        var dgb = try gb_data.scale(lr, &cuda_context, &stream);
+        defer dgb.deinitAsync(&stream);
+
+        var w_new = try w.asUntagged(F).data.sub(
+            &dgw,
+            &cuda_context,
+            &stream,
+        );
+        defer w_new.deinitAsync(&stream);
+
+        var b_new = try b.asUntagged(F).data.sub(
+            &dgb,
+            &cuda_context,
+            &stream,
+        );
+        defer b_new.deinitAsync(&stream);
+
+        std.mem.swap(tomo.tensor.GPUTensor(F), &w.asUntagged(F).data, &w_new);
+        std.mem.swap(tomo.tensor.GPUTensor(F), &b.asUntagged(F).data, &b_new);
+
+        try stream.sync();
+
+        var w_host = try w.asUntagged(F).data.toHost(allocator, &stream);
+        defer w_host.deinit(allocator);
+
+        var b_host = try b.asUntagged(F).data.toHost(allocator, &stream);
+        defer b_host.deinit(allocator);
+
+        std.debug.print("w: {d}", .{w_host});
+        std.debug.print("b: {d}\n\n", .{b_host});
+    }
+}
+
+pub fn main() !void {
+    try example2();
 }

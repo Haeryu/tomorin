@@ -16,6 +16,8 @@ const FunctionBase = @import("function.zig").FunctionBase;
 const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBase;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
+const sumTo = @import("function1in1out.zig").sumTo;
+
 pub fn FuncDecorator1Shape1in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
@@ -158,8 +160,8 @@ pub fn BroadCastTo(comptime T: type) type {
             return y.move();
         }
 
-        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try reshape(T, gy, self.x_shape);
+        pub fn backward(_: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try sumTo(T, gy, &.{});
         }
     };
 }

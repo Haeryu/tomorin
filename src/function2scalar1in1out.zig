@@ -131,9 +131,10 @@ pub fn ScaleShift(comptime T: type) type {
         scalar2: T, // shift
         base: FunctionBase,
 
-        const Scalar = T;
-        const In = T;
-        const Out = T;
+        pub const Scalar1 = T;
+        pub const Scalar2 = T;
+        pub const In = T;
+        pub const Out = T;
 
         const ref_in_at_back = false;
 

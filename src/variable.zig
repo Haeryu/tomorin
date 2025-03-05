@@ -53,6 +53,10 @@ pub fn Variable(comptime T: type) type {
             self.grad = null;
         }
 
+        pub fn len(self: *const Self) usize {
+            return self.data.calcLen();
+        }
+
         pub fn setPrev(self: *Self, prev: ?*TaggedVar) void {
             self.prev = prev;
         }
@@ -204,6 +208,12 @@ pub const TaggedVar = union(enum) {
             f32 => &self.f32,
             f64 => &self.f64,
             else => unreachable,
+        };
+    }
+
+    pub fn len(self: *const TaggedVar) usize {
+        return switch (self.*) {
+            inline else => |*v| v.len(),
         };
     }
 

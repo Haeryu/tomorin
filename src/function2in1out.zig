@@ -18,8 +18,10 @@ const makefunc1in2outBase = @import("function.zig").makefunc1in2outBase;
 
 const neg = @import("function1in1out.zig").neg;
 const pow = @import("function1scalar1in1out.zig").pow;
+const scale = @import("function1scalar1in1out.zig").scale;
 const square = @import("function1in1out.zig").square;
 const transpose = @import("function1in1out.zig").transpose;
+const broadcastTo = @import("function1shape1in1out.zig").broadcastTo;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -132,7 +134,7 @@ pub fn Add(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            if (x1 == x2) {
+            if (x1.ptr == x2.ptr) {
                 var new_x1 = try x1.cloneAsync(context.stream);
                 defer new_x1.deinitAsync(context.stream);
 
@@ -348,6 +350,7 @@ pub fn MatMul(comptime T: type) type {
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
             const gx = try matmul(T, gy, try transpose(T, self.in2.?));
             const gw = try matmul(T, try transpose(T, self.in1.?), gy);
+
             return .{ gx, gw };
         }
     };
@@ -355,4 +358,65 @@ pub fn MatMul(comptime T: type) type {
 
 pub fn matmul(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
     return try makefunc(MatMul(T), x1, x2);
+}
+
+pub fn MeanSquaredError(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar,
+        in2: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In1 = T;
+        pub const In2 = T;
+        pub const Out = T;
+
+        pub const ref_in1_at_back = true;
+        pub const ref_in2_at_back = true;
+
+        pub usingnamespace FuncDecorator2in1out(Self);
+
+        const Self = MeanSquaredError(T);
+
+        pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            if (x1 == x2) {
+                var new_x1 = try x1.cloneAsync(context.stream);
+                defer new_x1.deinitAsync(context.stream);
+
+                var diff = try new_x1.sub(x2, context.cuda_context, context.stream);
+                defer diff.deinitAsync(context.stream);
+
+                try diff.product(&diff, context.stream);
+
+                var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
+                defer sum.deinitAsync(context.stream);
+
+                return try sum.scale(@floatFromInt(diff.base.countElem()), context.cuda_context, context.stream);
+            } else {
+                var diff = try x1.sub(x2, context.cuda_context, context.stream);
+                defer diff.deinitAsync(context.stream);
+
+                try diff.product(&diff, context.stream);
+
+                var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
+                defer sum.deinitAsync(context.stream);
+
+                return try sum.scale(@floatFromInt(diff.base.countElem()), context.cuda_context, context.stream);
+            }
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
+            const diff = try sub(T, self.in1.?, self.in2.?);
+            const gy_broad = try broadcastTo(T, gy, diff.asUntaggedConst(T).data.base.getShapeConst());
+            const gy_diff = try mul(T, gy_broad, diff);
+            const gx0 = try scale(T, gy_diff, 2.0 / @as(T, @floatFromInt(diff.len())));
+            const gx1 = try neg(T, gx0);
+            return .{ gx0, gx1 };
+        }
+    };
+}
+
+pub fn meanSquaredError(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
+    return try makefunc(MeanSquaredError(T), x1, x2);
 }
