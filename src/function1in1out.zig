@@ -21,6 +21,7 @@ const scale = @import("function1scalar1in1out.zig").scale;
 const shift = @import("function1scalar1in1out.zig").shift;
 const mul = @import("function2in1out.zig").mul;
 const div = @import("function2in1out.zig").div;
+const broadcastTo = @import("function1shape1in1out.zig").broadcastTo;
 
 // TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
 
@@ -312,8 +313,10 @@ pub fn Tanh(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
             try y.tanh(context.stream);
-            return y;
+            return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
@@ -324,4 +327,148 @@ pub fn Tanh(comptime T: type) type {
 
 pub fn tanh(comptime T: type, x: *TaggedVar) !*TaggedVar {
     return try makefunc(Tanh(T), x);
+}
+
+pub fn Transpose(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub const ref_in_at_back = true;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Transpose(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            var y = try x.transpose(context.cuda_context, context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            return y.move();
+        }
+
+        pub fn backward(_: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try transpose(T, gy);
+        }
+    };
+}
+
+pub fn transpose(comptime T: type, x: *TaggedVar) !*TaggedVar {
+    return try makefunc(Transpose(T), x);
+}
+
+pub fn FuncDecoratorSumTo(comptime Self: type) type {
+    return struct {
+        const Base = FuncDecorator1in1outBase(Self);
+
+        pub fn create(context: *Context, axis: []const isize) !*Function {
+            const self = try context.allocator.create(Self);
+            errdefer context.allocator.destroy(self);
+
+            const func_ptr = try context.registerFunction(.{
+                .ptr = self,
+                .vtable = &.{
+                    .forward = &Base.forwardDecorated,
+                    .backward = &Base.backwardDecorated,
+                    .destroy = &Base.destroy,
+                    .get_generation = &Base.getGeneration,
+                    .enqueue = &Base.enqueue,
+                    .get_dot_alloc = &getDotAlloc,
+                },
+            });
+
+            self.* = .{
+                .in = null,
+                .out = null,
+                .base = .{
+                    .func_ptr = func_ptr,
+                    .context = context,
+                },
+                .axis = axis,
+            };
+
+            return func_ptr;
+        }
+
+        pub fn getDotAlloc(ctx: *anyopaque, var_seen_set: *TaggedVar.SeenSet) ![]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const allocator = self.base.context.allocator;
+
+            const in_contains = var_seen_set.contains(self.in.?);
+            const in = if (!in_contains) try self.in.?.getDotAlloc() else "";
+            defer if (!in_contains) allocator.free(in);
+
+            try var_seen_set.put(self.in.?, {});
+
+            const out_contains = var_seen_set.contains(self.out.?);
+            const out = if (!out_contains) try self.out.?.getDotAlloc() else "";
+            defer if (!out_contains) allocator.free(out);
+
+            try var_seen_set.put(self.out.?, {});
+
+            return try std.fmt.allocPrint(allocator,
+                \\{} [label="{s}", color=lightblue, style=filled, shape=box]
+                \\{s}
+                \\{s}
+                \\{} -> {}
+                \\{} -> {}
+                \\
+            , .{
+                @intFromPtr(ctx),
+                @typeName(Self)[std.mem.indexOf(u8, @typeName(Self), ".").? + 1 ..],
+                in,
+                out,
+                @intFromPtr(self.in.?),
+                @intFromPtr(ctx),
+                @intFromPtr(ctx),
+                @intFromPtr(self.out.?),
+            });
+        }
+    };
+}
+
+pub fn SumTo(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        x_shape: []const usize = &.{},
+        axis: []const isize,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub const ref_in_at_back = true;
+
+        pub usingnamespace FuncDecoratorSumTo(Self);
+
+        const Self = SumTo(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            self.x_shape = x.base.getShapeConst();
+
+            var y = try x.sum(context.allocator, self.axis, true, context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try broadcastTo(T, gy, self.x_shape);
+        }
+    };
+}
+
+pub fn sumTo(comptime T: type, x: *TaggedVar, axis: []const isize) !*TaggedVar {
+    const funckey = try SumTo(T).create(x.getContext(), axis);
+
+    return try makefunc1in1outBase(funckey, x);
 }

@@ -14,6 +14,9 @@ const scaleShift = tomorin.function.scaleShift;
 const square = tomorin.function.square;
 const sin = tomorin.function.sin;
 const tanh = tomorin.function.tanh;
+const reshape = tomorin.function.reshape;
+const transpose = tomorin.function.transpose;
+const sumTo = tomorin.function.sumTo;
 const TaggedVar = tomorin.variable.TaggedVar;
 
 fn factorial(x: f64) f64 {
@@ -51,7 +54,7 @@ fn taylorSin(comptime T: type, x: *TaggedVar, threshold: f32) !*TaggedVar {
     return y;
 }
 
-pub fn main() !void {
+fn example() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
@@ -78,7 +81,8 @@ pub fn main() !void {
 
     var x = try context.createVariable(F, v1.move(), "x");
 
-    var y = try tanh(F, x);
+    //var y = try tanh(F, x);
+    var y = try taylorSin(F, x, 1e-4);
 
     x.setName("x");
     y.setName("y");
@@ -100,4 +104,51 @@ pub fn main() !void {
         x.refGrad().?.setName(gxname);
         try x.refGrad().?.saveDot(fname);
     }
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream = try tomo.stream.Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try tomo.cuda_context.CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
+        .aggressive_release = false,
+        .init_func_capacity = 0,
+        .init_var_capacity = 0,
+    });
+    defer context.deinit();
+
+    const F = f64;
+
+    var v1 = try tomo.tensor.GPUTensor(F).initAsync(&.{ 2, 3 }, &stream);
+    errdefer v1.deinitAsync(&stream);
+    try v1.writeFromHostAsync(&.{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 }, 0, &stream);
+
+    var x = try context.createVariable(F, v1.move(), "x");
+
+    //var y = try reshape(F, x, &.{6});
+    var y = try sumTo(F, x, &.{0});
+
+    x.setName("x");
+    y.setName("y");
+
+    try y.backward();
+
+    var host_y = try y.asUntaggedConst(F).data.toHost(allocator, &stream);
+    defer host_y.deinit(allocator);
+
+    var host_gx = try x.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
+    defer host_gx.deinit(allocator);
+
+    std.debug.print("{d}", .{host_y});
+    std.debug.print("{d}", .{host_gx});
+
+    //    try example();
 }
