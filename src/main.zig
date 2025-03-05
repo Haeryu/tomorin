@@ -17,6 +17,7 @@ const tanh = tomorin.function.tanh;
 const reshape = tomorin.function.reshape;
 const transpose = tomorin.function.transpose;
 const sumTo = tomorin.function.sumTo;
+const matmul = tomorin.function.matmul;
 const TaggedVar = tomorin.variable.TaggedVar;
 
 fn factorial(x: f64) f64 {
@@ -125,30 +126,35 @@ pub fn main() !void {
     });
     defer context.deinit();
 
-    const F = f64;
+    const F = f32;
 
     var v1 = try tomo.tensor.GPUTensor(F).initAsync(&.{ 2, 3 }, &stream);
     errdefer v1.deinitAsync(&stream);
     try v1.writeFromHostAsync(&.{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 }, 0, &stream);
 
-    var x = try context.createVariable(F, v1.move(), "x");
+    var v2 = try tomo.tensor.GPUTensor(F).initAsync(&.{ 3, 4 }, &stream);
+    errdefer v2.deinitAsync(&stream);
+    try v2.writeFromHostAsync(&.{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 }, 0, &stream);
+
+    var x1 = try context.createVariable(F, v1.move(), "x1");
+    var x2 = try context.createVariable(F, v2.move(), "x2");
 
     //var y = try reshape(F, x, &.{6});
-    var y = try sumTo(F, x, &.{0});
-
-    x.setName("x");
-    y.setName("y");
+    var y = try matmul(F, x1, x2);
 
     try y.backward();
 
     var host_y = try y.asUntaggedConst(F).data.toHost(allocator, &stream);
     defer host_y.deinit(allocator);
 
-    var host_gx = try x.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
-    defer host_gx.deinit(allocator);
+    var host_gx1 = try x1.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
+    defer host_gx1.deinit(allocator);
+
+    var host_gx2 = try x2.refGrad().?.asUntaggedConst(F).data.toHost(allocator, &stream);
+    defer host_gx2.deinit(allocator);
 
     std.debug.print("{d}", .{host_y});
-    std.debug.print("{d}", .{host_gx});
+    std.debug.print("{d}", .{host_gx2});
 
     //    try example();
 }

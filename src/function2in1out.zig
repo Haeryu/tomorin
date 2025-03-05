@@ -19,6 +19,7 @@ const makefunc1in2outBase = @import("function.zig").makefunc1in2outBase;
 const neg = @import("function1in1out.zig").neg;
 const pow = @import("function1scalar1in1out.zig").pow;
 const square = @import("function1in1out.zig").square;
+const transpose = @import("function1in1out.zig").transpose;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -284,4 +285,74 @@ pub fn Div(comptime T: type) type {
 
 pub fn div(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
     return try makefunc(Div(T), x1, x2);
+}
+
+pub fn MatMul(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar,
+        in2: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In1 = T;
+        pub const In2 = T;
+        pub const Out = T;
+
+        pub const ref_in1_at_back = true;
+        pub const ref_in2_at_back = true;
+
+        pub usingnamespace FuncDecorator2in1out(Self);
+
+        const Self = MatMul(T);
+
+        // pub fn matmul(
+        //             self: *const Self,
+        //             self_transpose: bool,
+        //             other_tensor: anytype,
+        //             other_transpose: bool,
+        //             add_tensor: anytype,
+        //             add_transpose: bool,
+        //             comptime cublas_compute_type: c.cublasComputeType_t,
+        //             alpha: if (cublas_compute_type == c.CUBLAS_COMPUTE_16F) f16 else f32,
+        //             beta: if (cublas_compute_type == c.CUBLAS_COMPUTE_16F) f16 else f32,
+        //             comptime EpilogueT: type,
+        //             epilogue_config: EpilogueT.Config,
+        //             //cublas_compute_type: c.cublasComputeType_t,
+        //             stream: *const Stream,
+        //             cuda_context: *const CudaContext,
+        //             comptime OutType: type,
+        //         )
+
+        pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            var y = try x1.matmul(
+                false,
+                x2,
+                false,
+                null,
+                false,
+                tomo.c.CUBLAS_COMPUTE_32F,
+                1.0,
+                1.0,
+                tomo.tensor.matmul_epilogue.Epilogue(void, void),
+                .{},
+                context.stream,
+                context.cuda_context,
+                T,
+            );
+            errdefer y.deinitAsync(context.stream);
+
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
+            const gx = try matmul(T, gy, try transpose(T, self.in2.?));
+            const gw = try matmul(T, try transpose(T, self.in1.?), gy);
+            return .{ gx, gw };
+        }
+    };
+}
+
+pub fn matmul(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
+    return try makefunc(MatMul(T), x1, x2);
 }
