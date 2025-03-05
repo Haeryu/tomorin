@@ -311,12 +311,5 @@ pub fn makefunc1in2outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar) 
 
     try func_ptr.forward(&in, out[0..1]);
 
-    if (x1.getContextConst().options.front_only) {
-        out[0].?.protect();
-        defer out[0].?.unprotect();
-
-        x1.getContext().destroyFunctions();
-    }
-
     return out[0].?;
 }

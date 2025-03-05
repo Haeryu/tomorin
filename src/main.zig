@@ -67,8 +67,6 @@ pub fn main() !void {
         .aggressive_release = false,
         .init_func_capacity = 0,
         .init_var_capacity = 0,
-        .verbose_dot = false,
-        .front_only = false,
     });
     defer context.deinit();
 

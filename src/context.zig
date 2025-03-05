@@ -20,8 +20,6 @@ pub const ContextOptions = struct {
     verbose_dot: bool = false,
     init_var_capacity: usize = 0,
     init_func_capacity: usize = 0,
-    front_only: bool = false,
-    enable_multi_backprop: bool = true,
 };
 
 pub const Context = struct {
@@ -165,8 +163,6 @@ pub const Context = struct {
         comptime T: type,
         variable: *TaggedVar,
     ) !void {
-        std.debug.assert(!self.options.front_only);
-
         const variable_untagged = variable.asUntagged(T);
         const creator = variable.getCreator() orelse return error.NoCreator;
 
