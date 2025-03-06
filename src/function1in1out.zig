@@ -190,7 +190,7 @@ pub fn Exp(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try mul(T, self.in.?, gy);
+            return try mul(T, self.out.?, gy);
         }
     };
 }
@@ -363,7 +363,7 @@ pub fn transpose(comptime T: type, x: *TaggedVar) !*TaggedVar {
     return try makefunc(Transpose(T), x);
 }
 
-pub fn FuncDecoratorSumTo(comptime Self: type) type {
+pub fn FuncDecoratorSum(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
 
@@ -433,7 +433,7 @@ pub fn FuncDecoratorSumTo(comptime Self: type) type {
     };
 }
 
-pub fn SumTo(comptime T: type) type {
+pub fn Sum(comptime T: type) type {
     return struct {
         in: ?*TaggedVar,
         out: ?*TaggedVar,
@@ -446,9 +446,9 @@ pub fn SumTo(comptime T: type) type {
 
         pub const ref_in_at_back = true;
 
-        pub usingnamespace FuncDecoratorSumTo(Self);
+        pub usingnamespace FuncDecoratorSum(Self);
 
-        const Self = SumTo(T);
+        const Self = Sum(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
@@ -467,8 +467,159 @@ pub fn SumTo(comptime T: type) type {
     };
 }
 
-pub fn sumTo(comptime T: type, x: *TaggedVar, axis: []const isize) !*TaggedVar {
-    const funckey = try SumTo(T).create(x.getContext(), axis);
+pub fn sum(comptime T: type, x: *TaggedVar, axis: []const isize) !*TaggedVar {
+    const funckey = try Sum(T).create(x.getContext(), axis);
 
     return try makefunc1in1outBase(funckey, x);
+}
+
+pub fn FuncDecoratorSumTo(comptime Self: type) type {
+    return struct {
+        const Base = FuncDecorator1in1outBase(Self);
+
+        pub fn create(context: *Context, shape: []const usize) !*Function {
+            const self = try context.allocator.create(Self);
+            errdefer context.allocator.destroy(self);
+
+            const func_ptr = try context.registerFunction(.{
+                .ptr = self,
+                .vtable = &.{
+                    .forward = &Base.forwardDecorated,
+                    .backward = &Base.backwardDecorated,
+                    .destroy = &Base.destroy,
+                    .get_generation = &Base.getGeneration,
+                    .enqueue = &Base.enqueue,
+                    .get_dot_alloc = &getDotAlloc,
+                },
+            });
+
+            self.* = .{
+                .in = null,
+                .out = null,
+                .base = .{
+                    .func_ptr = func_ptr,
+                    .context = context,
+                },
+                .shape = shape,
+            };
+
+            return func_ptr;
+        }
+
+        pub fn getDotAlloc(ctx: *anyopaque, var_seen_set: *TaggedVar.SeenSet) ![]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const allocator = self.base.context.allocator;
+
+            const in_contains = var_seen_set.contains(self.in.?);
+            const in = if (!in_contains) try self.in.?.getDotAlloc() else "";
+            defer if (!in_contains) allocator.free(in);
+
+            try var_seen_set.put(self.in.?, {});
+
+            const out_contains = var_seen_set.contains(self.out.?);
+            const out = if (!out_contains) try self.out.?.getDotAlloc() else "";
+            defer if (!out_contains) allocator.free(out);
+
+            try var_seen_set.put(self.out.?, {});
+
+            return try std.fmt.allocPrint(allocator,
+                \\{} [label="{s}", color=lightblue, style=filled, shape=box]
+                \\{s}
+                \\{s}
+                \\{} -> {}
+                \\{} -> {}
+                \\
+            , .{
+                @intFromPtr(ctx),
+                @typeName(Self)[std.mem.indexOf(u8, @typeName(Self), ".").? + 1 ..],
+                in,
+                out,
+                @intFromPtr(self.in.?),
+                @intFromPtr(ctx),
+                @intFromPtr(ctx),
+                @intFromPtr(self.out.?),
+            });
+        }
+    };
+}
+
+pub fn SumTo(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        shape: []const usize,
+        x_shape: []const usize = &.{},
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub const ref_in_at_back = true;
+
+        pub usingnamespace FuncDecoratorSumTo(Self);
+
+        const Self = SumTo(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            self.x_shape = x.base.getShapeConst();
+
+            var y = try x.sumTo(context.allocator, self.shape, context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try broadcastTo(T, gy, self.x_shape);
+        }
+    };
+}
+
+pub fn sumTo(comptime T: type, x: *TaggedVar, shape: []const usize) !*TaggedVar {
+    const funckey = try SumTo(T).create(x.getContext(), shape);
+
+    return try makefunc1in1outBase(funckey, x);
+}
+
+pub fn Sigmoid(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub const ref_in_at_back = true;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Sigmoid(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            //        # y = 1 / (1 + xp.exp(-x))
+            // y = xp.tanh(x * 0.5) * 0.5 + 0.5  # Better implementation
+
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.sigmoid(context.stream);
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const y = self.out.?;
+            const one_minus_y = try shift(T, try neg(T, y), 1.0);
+            const y_times_one_minus_y = try mul(T, y, one_minus_y);
+            return try mul(T, gy, y_times_one_minus_y);
+        }
+    };
+}
+
+pub fn sigmoid(comptime T: type, x: *TaggedVar) !*TaggedVar {
+    return try makefunc(Sigmoid(T), x);
 }

@@ -95,6 +95,7 @@ pub usingnamespace @import("function1shape1in1out.zig");
 pub usingnamespace @import("function2in1out.zig");
 pub usingnamespace @import("function1scalar1in1out.zig");
 pub usingnamespace @import("function2scalar1in1out.zig");
+pub usingnamespace @import("function3in1out.zig");
 
 // pub fn matyas(comptime T: type, x: VarKey, y: VarKey) !VarKey {
 //     const x_y_sq = try @This().add(T, try @This().square(T, x), try @This().square(T, y));
@@ -303,7 +304,7 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
     };
 }
 
-pub fn makefunc1in2outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
+pub fn makefunc2in1outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
     std.debug.assert(x1.getContextConst() == x2.getContextConst());
 
     var out: [Function.max_out]?*TaggedVar = .{null} ** Function.max_out;
@@ -311,6 +312,129 @@ pub fn makefunc1in2outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar) 
     var in: [2]*TaggedVar = .{ x1, x2 };
 
     try func_ptr.forward(&in, out[0..1]);
+
+    return out[0].?;
+}
+
+pub fn FuncDecorator3in1outBase(comptime Self: type) type {
+    return struct {
+        pub fn destroy(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const context = self.base.context;
+
+            // if (self.in1) |in1| {
+            //     // in1.release();
+            // }
+            self.in1 = null;
+            // if (self.in2) |in2| {
+            //     // in2.release();
+            // }
+            self.in2 = null;
+            self.in3 = null;
+            if (self.out) |out| {
+                // out.release();
+                out.resetCreator();
+            }
+            self.out = null;
+            context.allocator.destroy(self);
+        }
+
+        pub fn getGeneration(ctx: *anyopaque) usize {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return self.base.generation;
+        }
+
+        pub fn forwardDecorated(ctx: *anyopaque, args: []*TaggedVar, out: []?*TaggedVar) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+
+            const context = self.base.context;
+
+            self.in1 = args[0];
+
+            self.in2 = args[1];
+
+            self.in3 = args[2];
+
+            var y = try self.forward(
+                &self.in1.?.asUntaggedConst(Self.In1).data,
+                &self.in2.?.asUntaggedConst(Self.In2).data,
+                &self.in3.?.asUntaggedConst(Self.In3).data,
+            );
+            errdefer y.deinitAsync(context.stream);
+
+            self.out = try context.createVariable(Self.Out, y.move(), null);
+
+            self.base.generation = @max(self.in1.?.getGeneration(), self.in2.?.getGeneration(), self.in3.?.getGeneration());
+            self.out.?.asUntagged(Self.Out).setCreator(
+                self.base.func_ptr,
+            );
+
+            out[0] = self.out.?;
+
+            // if (context.options.front_only) {
+            //     // self.in = null;
+            //     self.out = null;
+            // }
+        }
+
+        pub fn backwardDecorated(ctx: *anyopaque) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+
+            const gx1, const gx2, const gx3 = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
+
+            if (self.in1.?.asUntaggedConst(Self.Out).grad) |in_grad1| {
+                self.in1.?.setGrad(try add(Self.Out, in_grad1, gx1));
+            } else {
+                self.in1.?.setGrad(gx1);
+            }
+            if (self.in2.?.asUntaggedConst(Self.Out).grad) |in_grad2| {
+                self.in2.?.setGrad(try add(Self.Out, in_grad2, gx2));
+            } else {
+                self.in2.?.setGrad(gx2);
+            }
+            if (self.in3.?.asUntaggedConst(Self.Out).grad) |in_grad3| {
+                self.in3.?.setGrad(try add(Self.Out, in_grad3, gx3));
+            } else {
+                self.in3.?.setGrad(gx3);
+            }
+        }
+
+        pub fn enqueue(ctx: *anyopaque, queue: *Function.Queue, seen_set: *Function.SeenSet) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+
+            if (self.in1.?.asUntaggedConst(Self.In1).creator) |creator1| {
+                if (!seen_set.contains(creator1)) {
+                    try seen_set.put(creator1, {});
+                    try queue.add(creator1);
+                }
+            }
+
+            if (self.in2.?.asUntaggedConst(Self.In2).creator) |creator2| {
+                if (!seen_set.contains(creator2)) {
+                    try seen_set.put(creator2, {});
+                    try queue.add(creator2);
+                }
+            }
+
+            if (self.in3.?.asUntaggedConst(Self.In3).creator) |creator3| {
+                if (!seen_set.contains(creator3)) {
+                    try seen_set.put(creator3, {});
+                    try queue.add(creator3);
+                }
+            }
+        }
+    };
+}
+
+pub fn makefunc3in1outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar, x3: *TaggedVar) !*TaggedVar {
+    std.debug.assert(x1.getContextConst() == x2.getContextConst());
+    std.debug.assert(x1.getContextConst() == x3.getContextConst());
+
+    var out: [Function.max_out]?*TaggedVar = .{null} ** Function.max_out;
+
+    var in: [3]*TaggedVar = .{ x1, x2, x3 };
+
+    try func_ptr.forward(&in, out[0..2]);
 
     return out[0].?;
 }

@@ -14,7 +14,7 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 const FuncDecorator2in1outBase = @import("function.zig").FuncDecorator2in1outBase;
-const makefunc1in2outBase = @import("function.zig").makefunc1in2outBase;
+const makefunc2in1outBase = @import("function.zig").makefunc2in1outBase;
 
 const neg = @import("function1in1out.zig").neg;
 const pow = @import("function1scalar1in1out.zig").pow;
@@ -111,7 +111,7 @@ fn makefunc(
 ) !*TaggedVar {
     const funckey = try F.create(x1.getContext());
 
-    return try makefunc1in2outBase(funckey, x1, x2);
+    return try makefunc2in1outBase(funckey, x1, x2);
 }
 
 pub fn Add(comptime T: type) type {
@@ -392,7 +392,7 @@ pub fn MeanSquaredError(comptime T: type) type {
                 var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
                 defer sum.deinitAsync(context.stream);
 
-                return try sum.scale(@floatFromInt(diff.base.countElem()), context.cuda_context, context.stream);
+                return try sum.scale(1.0 / @as(T, @floatFromInt(diff.base.countElem())), context.cuda_context, context.stream);
             } else {
                 var diff = try x1.sub(x2, context.cuda_context, context.stream);
                 defer diff.deinitAsync(context.stream);
@@ -402,7 +402,7 @@ pub fn MeanSquaredError(comptime T: type) type {
                 var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
                 defer sum.deinitAsync(context.stream);
 
-                return try sum.scale(@floatFromInt(diff.base.countElem()), context.cuda_context, context.stream);
+                return try sum.scale(1.0 / @as(T, @floatFromInt(diff.base.countElem())), context.cuda_context, context.stream);
             }
         }
 

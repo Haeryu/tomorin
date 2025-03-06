@@ -16,10 +16,12 @@ const sin = tomorin.function.sin;
 const tanh = tomorin.function.tanh;
 const reshape = tomorin.function.reshape;
 const transpose = tomorin.function.transpose;
-const sumTo = tomorin.function.sumTo;
+const sum = tomorin.function.sum;
 const broadcastTo = tomorin.function.broadcastTo;
 const matmul = tomorin.function.matmul;
 const meanSquaredError = tomorin.function.meanSquaredError;
+const sigmoid = tomorin.function.sigmoid;
+const linear = tomorin.function.linear;
 const TaggedVar = tomorin.variable.TaggedVar;
 
 const F = f32;
@@ -153,7 +155,7 @@ fn example2() !void {
     const y = try add(F, try scaleShift(F, x, 2.0, 5.0), noise);
 
     const w = try context.createVariable(F, wv.move(), "w");
-    const b = try context.createVariable(F, bv.move(), "w");
+    const b = try context.createVariable(F, bv.move(), "b");
 
     const lr = 0.1;
     const iters = 100;
@@ -203,11 +205,207 @@ fn example2() !void {
         var b_host = try b.asUntagged(F).data.toHost(allocator, &stream);
         defer b_host.deinit(allocator);
 
+        try stream.sync();
+
         std.debug.print("w: {d}", .{w_host});
         std.debug.print("b: {d}\n\n", .{b_host});
     }
 }
 
+fn predict2(
+    comptime T: type,
+    x: *TaggedVar,
+    w1: *TaggedVar,
+    b1: *TaggedVar,
+    w2: *TaggedVar,
+    b2: *TaggedVar,
+) !*TaggedVar {
+    const y1 = try linear(T, x, w1, b1);
+    const y1_sig = try sigmoid(T, y1);
+    const y2 = try linear(T, y1_sig, w2, b2);
+
+    return y2;
+}
+
+fn example3() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream = try tomo.stream.Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try tomo.cuda_context.CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
+        .aggressive_release = false,
+        .init_func_capacity = 0,
+        .init_var_capacity = 0,
+    });
+    defer context.deinit();
+
+    var xv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
+    defer xv.deinitAsync(&stream);
+    try xv.fillUniformRange(-std.math.pi, std.math.pi, &cuda_context, &stream);
+
+    var noisev = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
+    defer noisev.deinitAsync(&stream);
+    try noisev.fillUniformRange(-0.1, 0.1, &cuda_context, &stream);
+
+    var yv = try xv.cloneAsync(&stream);
+    defer yv.deinitAsync(&stream);
+    try yv.sin(&stream);
+
+    var y_scale = try yv.scale(2.0 * std.math.pi, &cuda_context, &stream);
+    defer y_scale.deinitAsync(&stream);
+
+    var yv_noise = try y_scale.add(&noisev, &cuda_context, &stream);
+    defer yv_noise.deinitAsync(&stream);
+
+    const I = 1;
+    const H = 20;
+    const O = 1;
+
+    var w1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ I, H }, &stream);
+    errdefer w1v.deinitAsync(&stream);
+    try w1v.fillUniformRange(-0.001, 0.001, &cuda_context, &stream);
+
+    var b1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, H }, &stream);
+    errdefer b1v.deinitAsync(&stream);
+    try b1v.fill(0.0, &stream);
+
+    var w2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ H, O }, &stream);
+    errdefer w2v.deinitAsync(&stream);
+    try w2v.fillUniformRange(-0.1, 0.1, &cuda_context, &stream);
+
+    var b2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, O }, &stream);
+    errdefer b2v.deinitAsync(&stream);
+    try b2v.fill(0.0, &stream);
+
+    const x = try context.createVariable(F, xv.move(), "x");
+    const y = try context.createVariable(F, yv_noise.move(), "y");
+    const w1 = try context.createVariable(F, w1v.move(), "w1");
+    const b1 = try context.createVariable(F, b1v.move(), "b1");
+
+    const w2 = try context.createVariable(F, w2v.move(), "w2");
+    const b2 = try context.createVariable(F, b2v.move(), "b2");
+
+    // const gw1 = w1.detatchGrad();
+    // const gb1 = b1.detatchGrad();
+    // const gw2 = w2.detatchGrad();
+    // const gb2 = b2.detatchGrad();
+
+    var gw1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ I, H }, &stream);
+    errdefer gw1v.deinitAsync(&stream);
+
+    var gb1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, H }, &stream);
+    errdefer gb1v.deinitAsync(&stream);
+
+    var gw2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ H, O }, &stream);
+    errdefer gw2v.deinitAsync(&stream);
+
+    var gb2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, O }, &stream);
+    errdefer gb2v.deinitAsync(&stream);
+
+    const lr = 0.0001;
+    const iters = 1;
+
+    // TODO : protect -> not bool, out from context. protext from context
+
+    const base_state = context.popState();
+    defer context.restoreState(base_state);
+
+    for (0..iters) |i| {
+        defer {
+            stream.sync() catch {};
+            // context.destroyFunctions();
+            // context.destroyVariables();
+            // snapshot.destroyFunctions();
+        }
+
+        const y_pred = try predict2(F, x, w1, b1, w2, b2);
+        const loss = try meanSquaredError(F, y, y_pred);
+
+        try loss.backward();
+        // TODO move grad out of for loop -> prevent destroy
+        const gw1 = w1.detatchGrad();
+        const gb1 = b1.detatchGrad();
+        const gw2 = w2.detatchGrad();
+        const gb2 = b2.detatchGrad();
+
+        var dgw1 = try gw1.asUntagged(F).data.scale(lr, &cuda_context, &stream);
+        defer dgw1.deinitAsync(&stream);
+
+        var dgw2 = try gw2.asUntagged(F).data.scale(lr, &cuda_context, &stream);
+        defer dgw2.deinitAsync(&stream);
+
+        var dgb1 = try gb1.asUntagged(F).data.scale(lr, &cuda_context, &stream);
+        defer dgb1.deinitAsync(&stream);
+
+        var dgb2 = try gb2.asUntagged(F).data.scale(lr, &cuda_context, &stream);
+        defer dgb2.deinitAsync(&stream);
+
+        var w1_new = try w1.asUntagged(F).data.sub(
+            &dgw1,
+            &cuda_context,
+            &stream,
+        );
+        defer w1_new.deinitAsync(&stream);
+
+        var w2_new = try w2.asUntagged(F).data.sub(
+            &dgw2,
+            &cuda_context,
+            &stream,
+        );
+        defer w2_new.deinitAsync(&stream);
+
+        var b1_new = try b1.asUntagged(F).data.sub(
+            &dgb1,
+            &cuda_context,
+            &stream,
+        );
+        defer b1_new.deinitAsync(&stream);
+
+        var b2_new = try b2.asUntagged(F).data.sub(
+            &dgb2,
+            &cuda_context,
+            &stream,
+        );
+        defer b2_new.deinitAsync(&stream);
+
+        w1.asUntagged(F).data.deinitAsync(&stream);
+        w1.asUntagged(F).data = w1_new.move();
+        w2.asUntagged(F).data.deinitAsync(&stream);
+        w2.asUntagged(F).data = w2_new.move();
+        b1.asUntagged(F).data.deinitAsync(&stream);
+        b1.asUntagged(F).data = b1_new.move();
+        b2.asUntagged(F).data.deinitAsync(&stream);
+        b2.asUntagged(F).data = b2_new.move();
+
+        if (i % 1000 == 0) {
+            var pi_4v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, 1 }, &stream);
+            errdefer pi_4v.deinitAsync(&stream);
+            try pi_4v.fill(std.math.pi, &stream);
+
+            const pi_4 = try context.createVariable(F, pi_4v.move(), "pi/4");
+
+            const pi_4_y = try predict2(F, pi_4, w1, b1, w2, b2);
+            try stream.sync();
+
+            var loss_host = try loss.asUntagged(F).data.toHost(allocator, &stream);
+            defer loss_host.deinit(allocator);
+
+            var pi_4_y_host = try pi_4_y.asUntagged(F).data.toHost(allocator, &stream);
+            defer pi_4_y_host.deinit(allocator);
+
+            std.debug.print("loss: {d}", .{loss_host});
+            std.debug.print("pi_4: {d}\n", .{pi_4_y_host});
+        }
+    }
+}
+
 pub fn main() !void {
-    try example2();
+    try example3();
 }

@@ -36,4 +36,31 @@ pub const Snapshot = struct {
 
         return count;
     }
+
+    pub fn destroyVariables(self: *const Snapshot) void {
+        var chain = self.start_var;
+        while (chain) |head| {
+            if (head == self.end_var) break;
+            chain = head.getNext();
+            head.destroy();
+        }
+    }
+
+    pub fn releaseVariables(self: *const Snapshot) void {
+        var chain = self.start_var;
+        while (chain) |head| {
+            if (head == self.end_var) break;
+            chain = head.getNext();
+            head.release();
+        }
+    }
+
+    pub fn destroyFunctions(self: *const Snapshot) void {
+        var chain = self.start_func;
+        while (chain) |head| {
+            if (head == self.end_func) break;
+            chain = head.next;
+            head.destroy();
+        }
+    }
 };

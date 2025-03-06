@@ -90,6 +90,9 @@ pub fn Variable(comptime T: type) type {
 
         pub fn protect(self: *Self) void {
             self.protected = true;
+            if (self.grad) |g| {
+                g.protect();
+            }
         }
 
         pub fn unprotect(self: *Self) void {

@@ -31,8 +31,12 @@ pub const Context = struct {
     tagged_vars: std.heap.MemoryPool(TaggedVar),
     options: ContextOptions,
 
-    func_chain: ?*Function,
-    var_chain: ?*TaggedVar,
+    state: State,
+
+    pub const State = struct {
+        func_chain: ?*Function,
+        var_chain: ?*TaggedVar,
+    };
 
     const func_max_out = 3;
 
@@ -49,8 +53,10 @@ pub const Context = struct {
             .functions = try std.heap.MemoryPool(Function).initPreheated(allocator, options.init_func_capacity),
             .tagged_vars = try std.heap.MemoryPool(TaggedVar).initPreheated(allocator, options.init_var_capacity),
             .options = options,
-            .var_chain = null,
-            .func_chain = null,
+            .state = .{
+                .var_chain = null,
+                .func_chain = null,
+            },
         };
     }
 
@@ -61,27 +67,35 @@ pub const Context = struct {
         self.tagged_vars.deinit();
     }
 
-    pub fn destroyFunctionsChain(chain: ?*Function) void {
-        var mut_chain = chain;
-        while (mut_chain) |head| {
-            mut_chain = head.next;
+    pub fn destroyFunctionsChain(chain: *?*Function) void {
+        while (chain.*) |head| {
+            chain.* = head.next;
             head.destroy();
         }
     }
-    pub fn destroyVariablesChain(chain: ?*TaggedVar) void {
-        var mut_chain = chain;
-        while (mut_chain) |head| {
-            mut_chain = head.getNext();
+    pub fn destroyVariablesChain(chain: *?*TaggedVar) void {
+        while (chain.*) |head| {
+            chain.* = head.getNext();
             head.destroy();
+        }
+    }
+    pub fn releaseVariablesChain(chain: *?*TaggedVar) void {
+        while (chain.*) |head| {
+            chain.* = head.getNext();
+            head.release();
         }
     }
 
     pub fn destroyFunctions(self: *Context) void {
-        destroyFunctionsChain(self.func_chain);
+        destroyFunctionsChain(&self.state.func_chain);
     }
 
     pub fn destroyVariables(self: *Context) void {
-        destroyVariablesChain(self.var_chain);
+        destroyVariablesChain(&self.state.var_chain);
+    }
+
+    pub fn releaseVariables(self: *Context) void {
+        releaseVariablesChain(&self.state.var_chain);
     }
 
     pub fn createVariable(
@@ -104,18 +118,18 @@ pub const Context = struct {
         const ptr = try self.tagged_vars.create();
         ptr.* = tagged;
 
-        if (self.var_chain) |head| {
+        if (self.state.var_chain) |head| {
             ptr.setNext(head);
             head.setPrev(ptr);
         }
 
-        self.var_chain = ptr;
+        self.state.var_chain = ptr;
 
         return ptr;
     }
 
     pub fn countVariables(self: *const Context) usize {
-        var iter = self.var_chain;
+        var iter = self.state.var_chain;
         var count: usize = 0;
 
         while (iter) |variable| : (iter = variable.getNext()) {
@@ -126,7 +140,7 @@ pub const Context = struct {
     }
 
     pub fn countFunctions(self: *const Context) usize {
-        var iter = self.func_chain;
+        var iter = self.state.func_chain;
         var count: usize = 0;
 
         while (iter) |func| : (iter = func.next) {
@@ -148,12 +162,12 @@ pub const Context = struct {
         const ptr = try self.functions.create();
         ptr.* = func;
 
-        if (self.func_chain) |head| {
+        if (self.state.func_chain) |head| {
             ptr.next = head;
             head.prev = ptr;
         }
 
-        self.func_chain = ptr;
+        self.state.func_chain = ptr;
 
         return ptr;
     }
@@ -199,5 +213,18 @@ pub const Context = struct {
             .end_func = self.func_chain,
             .context = self,
         };
+    }
+
+    pub fn popState(self: *Context) State {
+        const state = self.state;
+        self.state = .{
+            .var_chain = null,
+            .func_chain = null,
+        };
+        return state;
+    }
+
+    pub fn restoreState(self: *Context, state: State) void {
+        self.state = state;
     }
 };
