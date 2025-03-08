@@ -227,7 +227,7 @@ fn predict2(
     return y2;
 }
 
-// TODO: quesion -> when compute sanitizer mad at matmul when i dont destroy vars is that matmul problem? if yes -> get rid of cublas
+// TODO: detatch memory stack deletion from context(allow themselves destroy temselves)
 fn example3() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -265,7 +265,7 @@ fn example3() !void {
     try yv.add(&noisev, &stream);
 
     const I = 1;
-    const H = 20;
+    const H = 200;
     const O = 1;
 
     var w1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ I, H }, &stream);
@@ -286,6 +286,7 @@ fn example3() !void {
 
     const x = try context.createVariable(F, xv.move(), "x");
     const y = try context.createVariable(F, yv.move(), "y");
+
     const w1 = try context.createVariable(F, w1v.move(), "w1");
     const b1 = try context.createVariable(F, b1v.move(), "b1");
 
@@ -327,6 +328,7 @@ fn example3() !void {
         try stream.sync();
 
         x.setGrad(null);
+        y.setGrad(null);
         const gw1 = w1.detatchGrad();
         const gb1 = b1.detatchGrad();
         const gw2 = w2.detatchGrad();
@@ -378,9 +380,9 @@ fn example3() !void {
             std.debug.print("pi_4: {d}\n", .{pi_4_y_host});
         }
 
-        context.destroyFunctions();
         try stream.sync();
-        context.destroyVariables();
+        context.destroyFunctions();
+        context.releaseVariables();
     }
 }
 
