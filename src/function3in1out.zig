@@ -173,23 +173,7 @@ pub fn Linear(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T), x3: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            var y = try x1.matmul(
-                false,
-                x2,
-                false,
-                null,
-                false,
-                tomo.c.CUBLAS_COMPUTE_32F,
-                1.0,
-                1.0,
-                tomo.tensor.matmul_epilogue.Epilogue(GPUTensor(T), void),
-                .{
-                    .bias_tensor = x3,
-                },
-                context.stream,
-                context.cuda_context,
-                T,
-            );
+            var y = try x1.linear(x2, x3, context.stream);
             errdefer y.deinitAsync(context.stream);
 
             return y.move();

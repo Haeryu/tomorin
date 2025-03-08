@@ -161,7 +161,10 @@ pub fn Scale(comptime T: type) type {
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            return try x.scale(self.scalar, context.cuda_context, context.stream);
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+            try y.scale(self.scalar, context.stream);
+            return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {

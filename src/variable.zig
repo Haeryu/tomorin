@@ -31,7 +31,6 @@ pub fn Variable(comptime T: type) type {
             }
 
             self.data.deinitAsync(self.context.stream);
-            self.data.ptr = null;
 
             if (self.prev) |prev| {
                 prev.setNext(self.next);
@@ -47,9 +46,9 @@ pub fn Variable(comptime T: type) type {
             // if (self.context.options.count_variables) {
             //     self.context.variable_count -= 1;
             // }
-            if (self.grad) |grad| {
-                grad.release();
-            }
+            // if (self.grad) |grad| {
+            //     grad.release();
+            // }
             self.grad = null;
         }
 
@@ -388,5 +387,23 @@ pub const TaggedVar = union(enum) {
         const grad = self.refGrad();
         self.setGrad(null);
         return grad.?;
+    }
+
+    pub fn getShape(self: *const TaggedVar) []const usize {
+        return switch (self.*) {
+            inline else => |*v| v.data.base.getShapeConst(),
+        };
+    }
+
+    pub fn getRow(self: *const TaggedVar) usize {
+        return switch (self.*) {
+            inline else => |*v| v.data.base.getRow(),
+        };
+    }
+
+    pub fn getCol(self: *const TaggedVar) usize {
+        return switch (self.*) {
+            inline else => |*v| v.data.base.getCol(),
+        };
     }
 };

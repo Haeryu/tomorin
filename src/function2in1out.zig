@@ -134,18 +134,12 @@ pub fn Add(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            if (x1.ptr == x2.ptr) {
-                var new_x1 = try x1.cloneAsync(context.stream);
-                defer new_x1.deinitAsync(context.stream);
+            var y = try x1.cloneAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
-                const y = try new_x1.add(x2, context.cuda_context, context.stream);
+            try y.add(x2, context.stream);
 
-                return y;
-            } else {
-                const y = try x1.add(x2, context.cuda_context, context.stream);
-
-                return y;
-            }
+            return y.move();
         }
 
         pub fn backward(_: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
@@ -182,18 +176,12 @@ pub fn Sub(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            if (x1 == x2) {
-                var new_x1 = try x1.cloneAsync(context.stream);
-                defer new_x1.deinitAsync(context.stream);
+            var y = try x1.cloneAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
-                const y = try new_x1.sub(x2, context.cuda_context, context.stream);
+            try y.sub(x2, context.stream);
 
-                return y;
-            } else {
-                const y = try x1.sub(x2, context.cuda_context, context.stream);
-
-                return y;
-            }
+            return y.move();
         }
 
         pub fn backward(_: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
@@ -327,21 +315,7 @@ pub fn MatMul(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            var y = try x1.matmul(
-                false,
-                x2,
-                false,
-                null,
-                false,
-                tomo.c.CUBLAS_COMPUTE_32F,
-                1.0,
-                1.0,
-                tomo.tensor.matmul_epilogue.Epilogue(void, void),
-                .{},
-                context.stream,
-                context.cuda_context,
-                T,
-            );
+            var y = try x1.linear(x2, null, context.stream);
             errdefer y.deinitAsync(context.stream);
 
             return y.move();
@@ -380,30 +354,19 @@ pub fn MeanSquaredError(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            if (x1 == x2) {
-                var new_x1 = try x1.cloneAsync(context.stream);
-                defer new_x1.deinitAsync(context.stream);
+            var diff = try x1.cloneAsync(context.stream);
+            defer diff.deinitAsync(context.stream);
 
-                var diff = try new_x1.sub(x2, context.cuda_context, context.stream);
-                defer diff.deinitAsync(context.stream);
+            try diff.sub(x2, context.stream);
 
-                try diff.product(&diff, context.stream);
+            try diff.product(&diff, context.stream);
 
-                var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
-                defer sum.deinitAsync(context.stream);
+            var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
+            defer sum.deinitAsync(context.stream);
 
-                return try sum.scale(1.0 / @as(T, @floatFromInt(diff.base.countElem())), context.cuda_context, context.stream);
-            } else {
-                var diff = try x1.sub(x2, context.cuda_context, context.stream);
-                defer diff.deinitAsync(context.stream);
+            try sum.scale(1.0 / @as(T, @floatFromInt(diff.base.countElem())), context.stream);
 
-                try diff.product(&diff, context.stream);
-
-                var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
-                defer sum.deinitAsync(context.stream);
-
-                return try sum.scale(1.0 / @as(T, @floatFromInt(diff.base.countElem())), context.cuda_context, context.stream);
-            }
+            return sum.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {

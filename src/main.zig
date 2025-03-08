@@ -220,13 +220,14 @@ fn predict2(
     w2: *TaggedVar,
     b2: *TaggedVar,
 ) !*TaggedVar {
-    const y1 = try linear(T, x, w1, b1);
+    const y1 = try linear(T, x, w1, try broadcastTo(F, b1, &.{ x.getRow(), w1.getCol() }));
     const y1_sig = try sigmoid(T, y1);
-    const y2 = try linear(T, y1_sig, w2, b2);
+    const y2 = try linear(T, y1_sig, w2, try broadcastTo(F, b2, &.{ y1_sig.getRow(), w2.getCol() }));
 
     return y2;
 }
 
+// TODO: quesion -> when compute sanitizer mad at matmul when i dont destroy vars is that matmul problem? if yes -> get rid of cublas
 fn example3() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -248,21 +249,20 @@ fn example3() !void {
 
     var xv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
     defer xv.deinitAsync(&stream);
-    try xv.fillUniformRange(-std.math.pi, std.math.pi, &cuda_context, &stream);
+    try xv.fillUniformRange(0.0, std.math.pi, &cuda_context, &stream);
 
     var noisev = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
     defer noisev.deinitAsync(&stream);
-    try noisev.fillUniformRange(-0.1, 0.1, &cuda_context, &stream);
+    try noisev.fillUniformRange(-0.001, 0.001, &cuda_context, &stream);
 
     var yv = try xv.cloneAsync(&stream);
     defer yv.deinitAsync(&stream);
     try yv.sin(&stream);
 
-    var y_scale = try yv.scale(2.0 * std.math.pi, &cuda_context, &stream);
-    defer y_scale.deinitAsync(&stream);
+    // var y_scale = try yv.scale(2.0 * std.math.pi, &cuda_context, &stream);
+    // defer y_scale.deinitAsync(&stream);
 
-    var yv_noise = try y_scale.add(&noisev, &cuda_context, &stream);
-    defer yv_noise.deinitAsync(&stream);
+    try yv.add(&noisev, &stream);
 
     const I = 1;
     const H = 20;
@@ -270,7 +270,7 @@ fn example3() !void {
 
     var w1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ I, H }, &stream);
     errdefer w1v.deinitAsync(&stream);
-    try w1v.fillUniformRange(-0.001, 0.001, &cuda_context, &stream);
+    try w1v.fillUniformRange(-0.1, 0.1, &cuda_context, &stream);
 
     var b1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, H }, &stream);
     errdefer b1v.deinitAsync(&stream);
@@ -285,7 +285,7 @@ fn example3() !void {
     try b2v.fill(0.0, &stream);
 
     const x = try context.createVariable(F, xv.move(), "x");
-    const y = try context.createVariable(F, yv_noise.move(), "y");
+    const y = try context.createVariable(F, yv.move(), "y");
     const w1 = try context.createVariable(F, w1v.move(), "w1");
     const b1 = try context.createVariable(F, b1v.move(), "b1");
 
@@ -309,85 +309,58 @@ fn example3() !void {
     var gb2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, O }, &stream);
     errdefer gb2v.deinitAsync(&stream);
 
-    const lr = 0.0001;
-    const iters = 1;
+    const lr = 0.002;
+    const iters = 10000;
 
-    // TODO : protect -> not bool, out from context. protext from context
+    // TODO : protect -> not bool, out from context. protext from context?
 
     const base_state = context.popState();
     defer context.restoreState(base_state);
 
     for (0..iters) |i| {
-        defer {
-            stream.sync() catch {};
-            // context.destroyFunctions();
-            // context.destroyVariables();
-            // snapshot.destroyFunctions();
-        }
-
+        // err3
         const y_pred = try predict2(F, x, w1, b1, w2, b2);
-        const loss = try meanSquaredError(F, y, y_pred);
 
+        const loss = try meanSquaredError(F, y, y_pred);
+        // err1
         try loss.backward();
-        // TODO move grad out of for loop -> prevent destroy
+        try stream.sync();
+
+        x.setGrad(null);
         const gw1 = w1.detatchGrad();
         const gb1 = b1.detatchGrad();
         const gw2 = w2.detatchGrad();
         const gb2 = b2.detatchGrad();
 
-        var dgw1 = try gw1.asUntagged(F).data.scale(lr, &cuda_context, &stream);
-        defer dgw1.deinitAsync(&stream);
-
-        var dgw2 = try gw2.asUntagged(F).data.scale(lr, &cuda_context, &stream);
-        defer dgw2.deinitAsync(&stream);
-
-        var dgb1 = try gb1.asUntagged(F).data.scale(lr, &cuda_context, &stream);
-        defer dgb1.deinitAsync(&stream);
-
-        var dgb2 = try gb2.asUntagged(F).data.scale(lr, &cuda_context, &stream);
-        defer dgb2.deinitAsync(&stream);
-
-        var w1_new = try w1.asUntagged(F).data.sub(
-            &dgw1,
-            &cuda_context,
-            &stream,
-        );
-        defer w1_new.deinitAsync(&stream);
-
-        var w2_new = try w2.asUntagged(F).data.sub(
-            &dgw2,
-            &cuda_context,
-            &stream,
-        );
-        defer w2_new.deinitAsync(&stream);
-
-        var b1_new = try b1.asUntagged(F).data.sub(
-            &dgb1,
-            &cuda_context,
-            &stream,
-        );
-        defer b1_new.deinitAsync(&stream);
-
-        var b2_new = try b2.asUntagged(F).data.sub(
-            &dgb2,
-            &cuda_context,
-            &stream,
-        );
-        defer b2_new.deinitAsync(&stream);
+        // err2
+        const dgw1 = try scale(F, gw1, lr);
+        const dgw2 = try scale(F, gw2, lr);
+        const dgb1 = try scale(F, gb1, lr);
+        const dgb2 = try scale(F, gb2, lr);
+        const w1_new = try sub(F, w1, dgw1);
+        var w2_new = try sub(F, w2, dgw2);
+        var b1_new = try sub(F, b1, dgb1);
+        var b2_new = try sub(F, b2, dgb2);
 
         w1.asUntagged(F).data.deinitAsync(&stream);
-        w1.asUntagged(F).data = w1_new.move();
+        w1.asUntagged(F).data = w1_new.asUntagged(F).data.move();
         w2.asUntagged(F).data.deinitAsync(&stream);
-        w2.asUntagged(F).data = w2_new.move();
+        w2.asUntagged(F).data = w2_new.asUntagged(F).data.move();
         b1.asUntagged(F).data.deinitAsync(&stream);
-        b1.asUntagged(F).data = b1_new.move();
+        b1.asUntagged(F).data = b1_new.asUntagged(F).data.move();
         b2.asUntagged(F).data.deinitAsync(&stream);
-        b2.asUntagged(F).data = b2_new.move();
+        b2.asUntagged(F).data = b2_new.asUntagged(F).data.move();
+
+        // try loss.saveDot(std.fmt.comptimePrint("graph{}.dot", .{i}));
+        // try gw1.saveDot(std.fmt.comptimePrint("graphgw1{}.dot", .{i}));
+        // try gb1.saveDot(std.fmt.comptimePrint("graphgb1{}.dot", .{i}));
+        // try gw2.saveDot(std.fmt.comptimePrint("graphgw2{}.dot", .{i}));
+        // try gb2.saveDot(std.fmt.comptimePrint("graphgb2{}.dot", .{i}));
 
         if (i % 1000 == 0) {
             var pi_4v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, 1 }, &stream);
             errdefer pi_4v.deinitAsync(&stream);
-            try pi_4v.fill(std.math.pi, &stream);
+            try pi_4v.fill(std.math.pi / 4.0, &stream);
 
             const pi_4 = try context.createVariable(F, pi_4v.move(), "pi/4");
 
@@ -399,10 +372,15 @@ fn example3() !void {
 
             var pi_4_y_host = try pi_4_y.asUntagged(F).data.toHost(allocator, &stream);
             defer pi_4_y_host.deinit(allocator);
+            try stream.sync();
 
             std.debug.print("loss: {d}", .{loss_host});
             std.debug.print("pi_4: {d}\n", .{pi_4_y_host});
         }
+
+        context.destroyFunctions();
+        try stream.sync();
+        context.destroyVariables();
     }
 }
 

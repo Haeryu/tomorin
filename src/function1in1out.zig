@@ -118,8 +118,8 @@ pub fn Neg(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-
-            return try y.scale(-1.0, context.cuda_context, context.stream);
+            try y.scale(-1.0, context.stream);
+            return y.move();
         }
 
         pub fn backward(_: *Self, gy: *TaggedVar) !*TaggedVar {
@@ -347,7 +347,7 @@ pub fn Transpose(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
 
-            var y = try x.transpose(context.cuda_context, context.stream);
+            var y = try x.transpose(context.stream);
             errdefer y.deinitAsync(context.stream);
 
             return y.move();
