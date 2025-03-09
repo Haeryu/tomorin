@@ -9,6 +9,7 @@ const GPUTensor = tomo.tensor.GPUTensor;
 const function = @import("function.zig");
 const linearEx = function.linearEx;
 const broadcastToEx = function.broadcastToEx;
+const matmulEx = function.matmulEx;
 
 pub fn LayerFieldsFactory(
     comptime param_names: []const [:0]const u8,
@@ -132,13 +133,16 @@ pub fn Linear(comptime T: type) type {
         pub fn init(
             in_size: ?usize,
             out_size: usize,
+            no_bias: bool,
             context: *Context,
             chain: *Chain,
         ) !Linear(T) {
-            var b_tensor: GPUTensor(T) = try .initAsync(&.{ 1, out_size }, context.stream);
-            errdefer b_tensor.deinitAsync(context.stream);
-            try b_tensor.fill(0.0, context.stream);
-            const b = try chain.createVariable(T, b_tensor.move(), "b");
+            const b = if (no_bias) null else blk: {
+                var b_tensor: GPUTensor(T) = try .initAsync(&.{ 1, out_size }, context.stream);
+                errdefer b_tensor.deinitAsync(context.stream);
+                try b_tensor.fill(0.0, context.stream);
+                break :blk try chain.createVariable(T, b_tensor.move(), "b");
+            };
 
             return .{
                 .fields = .{
@@ -157,8 +161,8 @@ pub fn Linear(comptime T: type) type {
         ) !*TaggedVar {
             var w_tensor: GPUTensor(T) = try .initAsync(&.{ self.in_size.?, self.out_size }, self.context.stream);
             errdefer w_tensor.deinitAsync(self.context.stream);
-            //try w_tensor.fillNormalDistribution(0.0, 1.0, self.context.cuda_context, self.context.stream);
-            try w_tensor.fillUniform(self.context.cuda_context, self.context.stream);
+            try w_tensor.fillNormalDistribution(0.0, 1.0, self.context.cuda_context, self.context.stream);
+            try w_tensor.scale(1.0 / @as(T, @floatFromInt(self.in_size.?)), self.context.stream);
             const w = try self.chain.createVariable(T, w_tensor.move(), "w");
             return w;
         }
@@ -173,16 +177,21 @@ pub fn Linear(comptime T: type) type {
                 self.fields.w = try self.initW();
             }
 
-            return try linearEx(
+            return if (self.fields.b) |b| try linearEx(
                 T,
                 x,
                 self.fields.w.?,
                 try broadcastToEx(
                     T,
-                    self.fields.b.?,
+                    b,
                     &.{ x.getRow(), self.fields.w.?.getCol() },
                     chain,
                 ),
+                chain,
+            ) else try matmulEx(
+                T,
+                x,
+                self.fields.w.?,
                 chain,
             );
         }

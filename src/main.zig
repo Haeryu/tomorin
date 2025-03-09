@@ -415,19 +415,16 @@ fn example4() !void {
     const x = try base_chain.createVariable(F, xv.move(), "x");
     const y = try base_chain.createVariable(F, yv.move(), "y");
 
-    // var y_scale = try yv.scale(2.0 * std.math.pi, &cuda_context, &stream);
-    // defer y_scale.deinitAsync(&stream);
-
-    var l1 = try tomorin.layer.Linear(F).init(null, 20, &context, base_chain);
+    var l1: tomorin.layer.Linear(F) = try .init(null, 20, false, &context, base_chain);
     defer l1.destroy();
 
-    var l2 = try tomorin.layer.Linear(F).init(null, 1, &context, base_chain);
+    var l2: tomorin.layer.Linear(F) = try .init(null, 1, false, &context, base_chain);
     defer l2.destroy();
 
     const iter_chain = try context.createChain();
     context.current_chain = iter_chain;
 
-    const lr = 0.002;
+    const lr = 0.1;
     const iters = 10000;
     for (0..iters + 1) |i| {
         const y_pred = try predict3(x, &l1, &l2, iter_chain);
@@ -464,24 +461,24 @@ fn example4() !void {
             }
         }
         if (i % 1000 == 0) {
-            var pi_4v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, 1 }, &stream);
-            errdefer pi_4v.deinitAsync(&stream);
-            try pi_4v.fill(std.math.pi / 4.0, &stream);
+            var pi_2v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, 1 }, &stream);
+            errdefer pi_2v.deinitAsync(&stream);
+            try pi_2v.fill(std.math.pi / 2.0, &stream);
 
-            const pi_4 = try iter_chain.createVariable(F, pi_4v.move(), "pi/4");
+            const pi_2 = try iter_chain.createVariable(F, pi_2v.move(), "pi/2");
 
-            const pi_4_y = try predict3(pi_4, &l1, &l2, iter_chain);
+            const pi_2_y = try predict3(pi_2, &l1, &l2, iter_chain);
             try stream.sync();
 
             var loss_host = try loss.asUntagged(F).data.toHost(allocator, &stream);
             defer loss_host.deinit(allocator);
 
-            var pi_4_y_host = try pi_4_y.asUntagged(F).data.toHost(allocator, &stream);
-            defer pi_4_y_host.deinit(allocator);
+            var pi_2_y_host = try pi_2_y.asUntagged(F).data.toHost(allocator, &stream);
+            defer pi_2_y_host.deinit(allocator);
             try stream.sync();
 
             std.debug.print("loss: {d}", .{loss_host});
-            std.debug.print("pi_4: {d}\n", .{pi_4_y_host});
+            std.debug.print("pi_2: {d}\n", .{pi_2_y_host});
         }
 
         try stream.sync();
