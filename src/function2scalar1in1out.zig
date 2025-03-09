@@ -17,9 +17,9 @@ const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBas
 const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
-const add = @import("function2in1out.zig").add;
-const mul = @import("function2in1out.zig").mul;
-const scale = @import("function1scalar1in1out.zig").scale;
+const addEx = @import("function2in1out.zig").addEx;
+const mulEx = @import("function2in1out.zig").mulEx;
+const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
 
 pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
     return struct {
@@ -125,8 +125,9 @@ fn makefunc(
     x: *TaggedVar,
     scalar1: F.Scalar1,
     scalar2: F.Scalar2,
+    chain: *Chain,
 ) !*TaggedVar {
-    const funckey = try F.create(x.getContext(), scalar1, scalar2);
+    const funckey = try F.create(x.getContext(), scalar1, scalar2, chain);
     return try makefunc1in1outBase(funckey, x);
 }
 
@@ -143,8 +144,6 @@ pub fn ScaleShift(comptime T: type) type {
         pub const In = T;
         pub const Out = T;
 
-        const ref_in_at_back = false;
-
         pub usingnamespace FuncDecorator2Scalar1in1out(Self);
 
         const Self = ScaleShift(T);
@@ -159,11 +158,15 @@ pub fn ScaleShift(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try scale(T, gy, self.scalar1);
+            return try scaleEx(T, gy, self.scalar1, self.base.chain);
         }
     };
 }
 
 pub fn scaleShift(comptime T: type, x: *TaggedVar, scal: T, shif: T) !*TaggedVar {
-    return try makefunc(ScaleShift(T), x, scal, shif);
+    return try scaleShiftEx(T, x, scal, shif, x.getContext().current_chain.?);
+}
+
+pub fn scaleShiftEx(comptime T: type, x: *TaggedVar, scal: T, shif: T, chain: *Chain) !*TaggedVar {
+    return try makefunc(ScaleShift(T), x, scal, shif, chain);
 }

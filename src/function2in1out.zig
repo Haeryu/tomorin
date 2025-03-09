@@ -17,12 +17,12 @@ const FuncDecorator2in1outBase = @import("function.zig").FuncDecorator2in1outBas
 const Chain = @import("chain.zig").Chain;
 const makefunc2in1outBase = @import("function.zig").makefunc2in1outBase;
 
-const neg = @import("function1in1out.zig").neg;
-const pow = @import("function1scalar1in1out.zig").pow;
-const scale = @import("function1scalar1in1out.zig").scale;
-const square = @import("function1in1out.zig").square;
-const transpose = @import("function1in1out.zig").transpose;
-const broadcastTo = @import("function1shape1in1out.zig").broadcastTo;
+const negEx = @import("function1in1out.zig").negEx;
+const powEx = @import("function1scalar1in1out.zig").powEx;
+const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
+const squareEx = @import("function1in1out.zig").squareEx;
+const transposeEx = @import("function1in1out.zig").transposeEx;
+const broadcastToEx = @import("function1shape1in1out.zig").broadcastToEx;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -132,9 +132,6 @@ pub fn Add(comptime T: type) type {
         pub const In2 = T;
         pub const Out = T;
 
-        pub const ref_in1_at_back = false;
-        pub const ref_in2_at_back = false;
-
         pub usingnamespace FuncDecorator2in1out(Self);
 
         const Self = Add(T);
@@ -160,7 +157,16 @@ pub fn add(
     x1: *TaggedVar,
     x2: *TaggedVar,
 ) !*TaggedVar {
-    return try makefunc(Add(T), x1, x2, x1.getContext().current_chain.?);
+    return try addEx(T, x1, x2, x1.getContext().current_chain.?);
+}
+
+pub fn addEx(
+    comptime T: type,
+    x1: *TaggedVar,
+    x2: *TaggedVar,
+    chain: *Chain,
+) !*TaggedVar {
+    return try makefunc(Add(T), x1, x2, chain);
 }
 
 pub fn Sub(comptime T: type) type {
@@ -173,9 +179,6 @@ pub fn Sub(comptime T: type) type {
         pub const In1 = T;
         pub const In2 = T;
         pub const Out = T;
-
-        pub const ref_in1_at_back = false;
-        pub const ref_in2_at_back = false;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -191,14 +194,22 @@ pub fn Sub(comptime T: type) type {
             return y.move();
         }
 
-        pub fn backward(_: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
-            return .{ gy, try neg(Self.In2, gy) };
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
+            return .{ gy, try negEx(
+                Self.In2,
+                gy,
+                self.base.chain,
+            ) };
         }
     };
 }
 
 pub fn sub(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(Sub(T), x1, x2, x1.getContext().current_chain.?);
+    return try subEx(T, x1, x2, x1.getContext().current_chain.?);
+}
+
+pub fn subEx(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Sub(T), x1, x2, chain);
 }
 
 pub fn Mul(comptime T: type) type {
@@ -211,9 +222,6 @@ pub fn Mul(comptime T: type) type {
         pub const In1 = T;
         pub const In2 = T;
         pub const Out = T;
-
-        pub const ref_in1_at_back = true;
-        pub const ref_in2_at_back = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -230,13 +238,17 @@ pub fn Mul(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
-            return .{ try mul(In1, gy, self.in2.?), try mul(In2, gy, self.in1.?) };
+            return .{ try mulEx(In1, gy, self.in2.?, self.base.chain), try mulEx(In2, gy, self.in1.?, self.base.chain) };
         }
     };
 }
 
 pub fn mul(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(Mul(T), x1, x2, x1.getContext().current_chain.?);
+    return try mulEx(T, x1, x2, x1.getContext().current_chain.?);
+}
+
+pub fn mulEx(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Mul(T), x1, x2, chain);
 }
 
 pub fn Div(comptime T: type) type {
@@ -249,9 +261,6 @@ pub fn Div(comptime T: type) type {
         pub const In1 = T;
         pub const In2 = T;
         pub const Out = T;
-
-        pub const ref_in1_at_back = true;
-        pub const ref_in2_at_back = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -270,10 +279,10 @@ pub fn Div(comptime T: type) type {
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
             const gx0 = try div(T, gy, self.in2.?);
 
-            const x2_sq = try square(T, self.in2.?);
-            const minus_x1 = try neg(T, self.in1.?);
-            const denom = try div(T, minus_x1, x2_sq);
-            const gx1 = try mul(T, gy, denom);
+            const x2_sq = try squareEx(T, self.in2.?, self.base.chain);
+            const minus_x1 = try negEx(T, self.in1.?, self.base.chain);
+            const denom = try divEx(T, minus_x1, x2_sq, self.base.chain);
+            const gx1 = try mulEx(T, gy, denom, self.base.chain);
 
             return .{ gx0, gx1 };
         }
@@ -281,7 +290,11 @@ pub fn Div(comptime T: type) type {
 }
 
 pub fn div(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(Div(T), x1, x2);
+    return try divEx(T, x1, x2, x1.getContext().current_chain.?);
+}
+
+pub fn divEx(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Div(T), x1, x2, chain);
 }
 
 pub fn MatMul(comptime T: type) type {
@@ -294,9 +307,6 @@ pub fn MatMul(comptime T: type) type {
         pub const In1 = T;
         pub const In2 = T;
         pub const Out = T;
-
-        pub const ref_in1_at_back = true;
-        pub const ref_in2_at_back = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -329,8 +339,8 @@ pub fn MatMul(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
-            const gx = try matmul(T, gy, try transpose(T, self.in2.?));
-            const gw = try matmul(T, try transpose(T, self.in1.?), gy);
+            const gx = try matmulEx(T, gy, try transposeEx(T, self.in2.?, self.base.chain), self.base.chain);
+            const gw = try matmulEx(T, try transposeEx(T, self.in1.?, self.base.chain), gy, self.base.chain);
 
             return .{ gx, gw };
         }
@@ -338,7 +348,11 @@ pub fn MatMul(comptime T: type) type {
 }
 
 pub fn matmul(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(MatMul(T), x1, x2, x1.getContext().current_chain.?);
+    return try matmulEx(T, x1, x2, x1.getContext().current_chain.?);
+}
+
+pub fn matmulEx(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(MatMul(T), x1, x2, chain);
 }
 
 pub fn MeanSquaredError(comptime T: type) type {
@@ -351,9 +365,6 @@ pub fn MeanSquaredError(comptime T: type) type {
         pub const In1 = T;
         pub const In2 = T;
         pub const Out = T;
-
-        pub const ref_in1_at_back = true;
-        pub const ref_in2_at_back = true;
 
         pub usingnamespace FuncDecorator2in1out(Self);
 
@@ -378,15 +389,19 @@ pub fn MeanSquaredError(comptime T: type) type {
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
             const diff = try sub(T, self.in1.?, self.in2.?);
-            const gy_broad = try broadcastTo(T, gy, diff.asUntaggedConst(T).data.base.getShapeConst());
-            const gy_diff = try mul(T, gy_broad, diff);
-            const gx0 = try scale(T, gy_diff, 2.0 / @as(T, @floatFromInt(diff.len())));
-            const gx1 = try neg(T, gx0);
+            const gy_broad = try broadcastToEx(T, gy, diff.asUntaggedConst(T).data.base.getShapeConst(), self.base.chain);
+            const gy_diff = try mulEx(T, gy_broad, diff, self.base.chain);
+            const gx0 = try scaleEx(T, gy_diff, 2.0 / @as(T, @floatFromInt(diff.len())), self.base.chain);
+            const gx1 = try negEx(T, gx0, self.base.chain);
             return .{ gx0, gx1 };
         }
     };
 }
 
 pub fn meanSquaredError(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(MeanSquaredError(T), x1, x2, x1.getContext().current_chain.?);
+    return try meanSquaredErrorEx(T, x1, x2, x1.getContext().current_chain.?);
+}
+
+pub fn meanSquaredErrorEx(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(MeanSquaredError(T), x1, x2, chain);
 }

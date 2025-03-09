@@ -17,9 +17,9 @@ const FuncDecorator3in1outBase = @import("function.zig").FuncDecorator3in1outBas
 const Chain = @import("chain.zig").Chain;
 const makefunc3in1outBase = @import("function.zig").makefunc3in1outBase;
 
-const transpose = @import("function1in1out.zig").transpose;
-const sumTo = @import("function1in1out.zig").sumTo;
-const matmul = @import("function2in1out.zig").matmul;
+const transposeEx = @import("function1in1out.zig").transposeEx;
+const sumToEx = @import("function1in1out.zig").sumToEx;
+const matmulEx = @import("function2in1out.zig").matmulEx;
 
 pub fn FuncDecorator3in1out(comptime Self: type) type {
     return struct {
@@ -187,9 +187,9 @@ pub fn Linear(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar, *TaggedVar }) {
-            const gx = try matmul(T, gy, try transpose(T, self.in2.?));
-            const gw = try matmul(T, try transpose(T, self.in1.?), gy);
-            const gb = try sumTo(T, gy, self.in3.?.asUntaggedConst(T).data.base.getShapeConst());
+            const gx = try matmulEx(T, gy, try transposeEx(T, self.in2.?, self.base.chain), self.base.chain);
+            const gw = try matmulEx(T, try transposeEx(T, self.in1.?, self.base.chain), gy, self.base.chain);
+            const gb = try sumToEx(T, gy, self.in3.?.asUntaggedConst(T).data.base.getShapeConst(), self.base.chain);
 
             return .{ gx, gw, gb };
         }
@@ -197,5 +197,9 @@ pub fn Linear(comptime T: type) type {
 }
 
 pub fn linear(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, x3: *TaggedVar) !*TaggedVar {
-    return try makefunc(Linear(T), x1, x2, x3, x1.getContext().current_chain.?);
+    return try linearEx(T, x1, x2, x3, x1.getContext().current_chain.?);
+}
+
+pub fn linearEx(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, x3: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Linear(T), x1, x2, x3, chain);
 }

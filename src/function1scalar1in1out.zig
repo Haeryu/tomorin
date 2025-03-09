@@ -17,8 +17,8 @@ const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBas
 const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
-const add = @import("function2in1out.zig").add;
-const mul = @import("function2in1out.zig").mul;
+const addEx = @import("function2in1out.zig").addEx;
+const mulEx = @import("function2in1out.zig").mulEx;
 
 pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     return struct {
@@ -123,8 +123,6 @@ pub fn Shift(comptime T: type) type {
         pub const In = T;
         pub const Out = T;
 
-        pub const ref_in_at_back = false;
-
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
         const Self = Shift(T);
@@ -145,7 +143,11 @@ pub fn Shift(comptime T: type) type {
 }
 
 pub fn shift(comptime T: type, x: *TaggedVar, scalar: T) !*TaggedVar {
-    return try makefunc(Shift(T), x, scalar, x.getContext().current_chain.?);
+    return try shiftEx(T, x, scalar, x.getContext().current_chain.?);
+}
+
+pub fn shiftEx(comptime T: type, x: *TaggedVar, scalar: T, chain: *Chain) !*TaggedVar {
+    return try makefunc(Shift(T), x, scalar, chain);
 }
 
 pub fn Scale(comptime T: type) type {
@@ -158,8 +160,6 @@ pub fn Scale(comptime T: type) type {
         pub const Scalar = T;
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = false;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
@@ -174,13 +174,17 @@ pub fn Scale(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try scale(T, gy, self.scalar);
+            return try scaleEx(T, gy, self.scalar, self.base.chain);
         }
     };
 }
 
 pub fn scale(comptime T: type, x: *TaggedVar, scalar: T) !*TaggedVar {
-    return try makefunc(Scale(T), x, scalar, x.getContext().current_chain.?);
+    return try scaleEx(T, x, scalar, x.getContext().current_chain.?);
+}
+
+pub fn scaleEx(comptime T: type, x: *TaggedVar, scalar: T, chain: *Chain) !*TaggedVar {
+    return try makefunc(Scale(T), x, scalar, chain);
 }
 
 pub fn Powf(comptime T: type) type {
@@ -194,8 +198,6 @@ pub fn Powf(comptime T: type) type {
         pub const In = T;
         pub const Out = T;
 
-        pub const ref_in_at_back = true;
-
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
         const Self = Powf(T);
@@ -208,15 +210,19 @@ pub fn Powf(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            const x_cmin1 = try powf(T, self.in.?, self.scalar - 1.0);
-            const c_x_cmin1 = try scale(T, x_cmin1, self.scalar);
-            return try mul(T, c_x_cmin1, gy);
+            const x_cmin1 = try powfEx(T, self.in.?, self.scalar - 1.0, self.base.chain);
+            const c_x_cmin1 = try scaleEx(T, x_cmin1, self.scalar, self.base.chain);
+            return try mulEx(T, c_x_cmin1, gy, self.base.chain);
         }
     };
 }
 
 pub fn powf(comptime T: type, x: *TaggedVar, scalar: T) !*TaggedVar {
-    return try makefunc(Powf(T), x, scalar);
+    return try powfEx(T, x, scalar, x.getContext().current_chain.?);
+}
+
+pub fn powfEx(comptime T: type, x: *TaggedVar, scalar: T, chain: *Chain) !*TaggedVar {
+    return try makefunc(Powf(T), x, scalar, chain);
 }
 
 pub fn Pow(comptime T: type) type {
@@ -229,8 +235,6 @@ pub fn Pow(comptime T: type) type {
         pub const Scalar = i32;
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1Scalar1in1out(Self);
 
@@ -245,17 +249,22 @@ pub fn Pow(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            const x_cmin1 = try pow(T, self.in.?, self.scalar - 1);
-            const c_x_cmin1 = try scale(
+            const x_cmin1 = try powEx(T, self.in.?, self.scalar - 1, self.base.chain);
+            const c_x_cmin1 = try scaleEx(
                 T,
                 x_cmin1,
                 if (T == BF16) BF16.fromF32(@floatFromInt(self.scalar)) else @floatFromInt(self.scalar),
+                self.base.chain,
             );
-            return try mul(T, c_x_cmin1, gy);
+            return try mulEx(T, c_x_cmin1, gy, self.base.chain);
         }
     };
 }
 
 pub fn pow(comptime T: type, x: *TaggedVar, scalar: i32) !*TaggedVar {
-    return try makefunc(Pow(T), x, scalar);
+    return try powEx(T, x, scalar, x.getContext().current_chain.?);
+}
+
+pub fn powEx(comptime T: type, x: *TaggedVar, scalar: i32, chain: *Chain) !*TaggedVar {
+    return try makefunc(Pow(T), x, scalar, chain);
 }

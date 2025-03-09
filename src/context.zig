@@ -172,7 +172,7 @@ pub const Context = struct {
         errdefer ones.deinitAsync(self.stream);
         try ones.fill(if (T == BF16) BF16.fromF32(1.0) else 1.0, self.stream);
 
-        const initial_grad = try self.createVariable(T, ones, null);
+        const initial_grad = try self.createVariableEx(T, ones, null, creator.chain);
         initial_grad.protect();
         defer initial_grad.unprotect();
 

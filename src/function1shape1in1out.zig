@@ -17,7 +17,7 @@ const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBas
 const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
-const sum = @import("function1in1out.zig").sum;
+const sumEx = @import("function1in1out.zig").sumEx;
 
 pub fn FuncDecorator1Shape1in1out(comptime Self: type) type {
     return struct {
@@ -128,17 +128,17 @@ pub fn Reshape(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try reshape(T, gy, self.old_shape);
+            return try reshapeEx(T, gy, self.old_shape, self.base.chain);
         }
     };
 }
 
-pub fn reshape(
-    comptime T: type,
-    x: *TaggedVar,
-    shape: []const usize,
-) !*TaggedVar {
-    return try makefunc(Reshape(T), x, shape);
+pub fn reshape(comptime T: type, x: *TaggedVar, shape: []const usize) !*TaggedVar {
+    return try makefunc(Reshape(T), x, shape, x.getContext().current_chain.?);
+}
+
+pub fn reshapeEx(comptime T: type, x: *TaggedVar, shape: []const usize, chain: *Chain) !*TaggedVar {
+    return try makefunc(Reshape(T), x, shape, chain);
 }
 
 pub fn BroadCastTo(comptime T: type) type {
@@ -166,16 +166,16 @@ pub fn BroadCastTo(comptime T: type) type {
             return y.move();
         }
 
-        pub fn backward(_: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try sum(T, gy, &.{});
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try sumEx(T, gy, &.{}, self.base.chain);
         }
     };
 }
 
-pub fn broadcastTo(
-    comptime T: type,
-    x: *TaggedVar,
-    shape: []const usize,
-) !*TaggedVar {
-    return try makefunc(BroadCastTo(T), x, shape, x.getContext().current_chain.?);
+pub fn broadcastTo(comptime T: type, x: *TaggedVar, shape: []const usize) !*TaggedVar {
+    return try broadcastToEx(T, x, shape, x.getContext().current_chain.?);
+}
+
+pub fn broadcastToEx(comptime T: type, x: *TaggedVar, shape: []const usize, chain: *Chain) !*TaggedVar {
+    return try makefunc(BroadCastTo(T), x, shape, chain);
 }

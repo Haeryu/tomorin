@@ -17,12 +17,12 @@ const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBas
 const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
-const add = @import("function2in1out.zig").add;
-const scale = @import("function1scalar1in1out.zig").scale;
-const shift = @import("function1scalar1in1out.zig").shift;
-const mul = @import("function2in1out.zig").mul;
-const div = @import("function2in1out.zig").div;
-const broadcastTo = @import("function1shape1in1out.zig").broadcastTo;
+const addEx = @import("function2in1out.zig").addEx;
+const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
+const shiftEx = @import("function1scalar1in1out.zig").shiftEx;
+const mulEx = @import("function2in1out.zig").mulEx;
+const divEx = @import("function2in1out.zig").divEx;
+const broadcastToEx = @import("function1shape1in1out.zig").broadcastToEx;
 
 // TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
 
@@ -115,8 +115,6 @@ pub fn Neg(comptime T: type) type {
         pub const In = T;
         pub const Out = T;
 
-        pub const ref_in_at_back = false;
-
         pub usingnamespace FuncDecorator1in1out(Self);
 
         const Self = Neg(T);
@@ -128,14 +126,18 @@ pub fn Neg(comptime T: type) type {
             return y.move();
         }
 
-        pub fn backward(_: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try neg(T, gy);
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try negEx(T, gy, self.base.chain);
         }
     };
 }
 
 pub fn neg(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Neg(T), x, x.getContext().current_chain.?);
+    return try negEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn negEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Neg(T), x, chain);
 }
 
 pub fn Square(comptime T: type) type {
@@ -143,8 +145,6 @@ pub fn Square(comptime T: type) type {
         in: ?*TaggedVar,
         out: ?*TaggedVar,
         base: FunctionBase,
-
-        pub const ref_in_at_back = true;
 
         pub const In = T;
         pub const Out = T;
@@ -161,13 +161,17 @@ pub fn Square(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try mul(T, try scale(T, self.in.?, 2.0), gy);
+            return try mulEx(T, try scaleEx(T, self.in.?, 2.0, self.base.chain), gy, self.base.chain);
         }
     };
 }
 
 pub fn square(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Square(T), x);
+    return try squareEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn squareEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Square(T), x, chain);
 }
 
 pub fn Exp(comptime T: type) type {
@@ -178,8 +182,6 @@ pub fn Exp(comptime T: type) type {
 
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -193,13 +195,17 @@ pub fn Exp(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try mul(T, self.out.?, gy);
+            return try mulEx(T, self.out.?, gy, self.base.chain);
         }
     };
 }
 
 pub fn exp(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Exp(T), x);
+    return try expEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn expEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Exp(T), x, chain);
 }
 
 pub fn Sin(comptime T: type) type {
@@ -210,8 +216,6 @@ pub fn Sin(comptime T: type) type {
 
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -225,13 +229,17 @@ pub fn Sin(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try mul(T, try cos(T, self.in.?), gy);
+            return try mulEx(T, try cosEx(T, self.in.?, self.base.chain), gy, self.base.chain);
         }
     };
 }
 
 pub fn sin(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Sin(T), x);
+    return try sinEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn sinEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Sin(T), x, chain);
 }
 
 pub fn Cos(comptime T: type) type {
@@ -242,8 +250,6 @@ pub fn Cos(comptime T: type) type {
 
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -257,13 +263,17 @@ pub fn Cos(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try mul(T, try scale(T, try sin(T, self.in.?), -1.0), gy);
+            return try mulEx(T, try scaleEx(T, try sinEx(T, self.in.?, self.base.chain), -1.0, self.base.chain), gy, self.base.chain);
         }
     };
 }
 
 pub fn cos(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Cos(T), x);
+    return try cosEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn cosEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Cos(T), x, chain);
 }
 
 pub fn Tan(comptime T: type) type {
@@ -274,8 +284,6 @@ pub fn Tan(comptime T: type) type {
 
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -289,13 +297,17 @@ pub fn Tan(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try div(T, gy, try square(T, try cos(T, self.in.?)));
+            return try divEx(T, gy, try squareEx(T, try cosEx(T, self.in.?, self.base.chain), self.base.chain), self.base.chain);
         }
     };
 }
 
 pub fn tan(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Tan(T), x);
+    return try tanEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn tanEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Tan(T), x, chain);
 }
 
 pub fn Tanh(comptime T: type) type {
@@ -306,8 +318,6 @@ pub fn Tanh(comptime T: type) type {
 
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -323,13 +333,22 @@ pub fn Tanh(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try mul(T, gy, try shift(T, try neg(T, try square(T, self.out.?)), 1.0));
+            return try mulEx(
+                T,
+                gy,
+                try shiftEx(T, try negEx(T, try squareEx(T, self.out.?, self.base.chain), self.base.chain), 1.0, self.base.chain),
+                self.base.chain,
+            );
         }
     };
 }
 
 pub fn tanh(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Tanh(T), x);
+    return try tanhEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn tanhEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Tanh(T), x, chain);
 }
 
 pub fn Transpose(comptime T: type) type {
@@ -340,8 +359,6 @@ pub fn Transpose(comptime T: type) type {
 
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -356,14 +373,18 @@ pub fn Transpose(comptime T: type) type {
             return y.move();
         }
 
-        pub fn backward(_: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try transpose(T, gy);
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try transposeEx(T, gy, self.base.chain);
         }
     };
 }
 
 pub fn transpose(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Transpose(T), x, x.getContext().current_chain.?);
+    return try transposeEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn transposeEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Transpose(T), x, chain);
 }
 
 pub fn FuncDecoratorSum(comptime Self: type) type {
@@ -452,8 +473,6 @@ pub fn Sum(comptime T: type) type {
         pub const In = T;
         pub const Out = T;
 
-        pub const ref_in_at_back = true;
-
         pub usingnamespace FuncDecoratorSum(Self);
 
         const Self = Sum(T);
@@ -470,13 +489,17 @@ pub fn Sum(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try broadcastTo(T, gy, self.x_shape);
+            return try broadcastToEx(T, gy, self.x_shape, self.base.chain);
         }
     };
 }
 
 pub fn sum(comptime T: type, x: *TaggedVar, axis: []const isize) !*TaggedVar {
-    const funckey = try Sum(T).create(x.getContext(), axis, x.getContext().current_chain.?);
+    return try sumEx(T, x, axis, x.getContext().current_chain.?);
+}
+
+pub fn sumEx(comptime T: type, x: *TaggedVar, axis: []const isize, chain: *Chain) !*TaggedVar {
+    const funckey = try Sum(T).create(x.getContext(), axis, chain);
 
     return try makefunc1in1outBase(funckey, x);
 }
@@ -567,8 +590,6 @@ pub fn SumTo(comptime T: type) type {
         pub const In = T;
         pub const Out = T;
 
-        pub const ref_in_at_back = true;
-
         pub usingnamespace FuncDecoratorSumTo(Self);
 
         const Self = SumTo(T);
@@ -585,13 +606,17 @@ pub fn SumTo(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try broadcastTo(T, gy, self.x_shape);
+            return try broadcastToEx(T, gy, self.x_shape, self.base.chain);
         }
     };
 }
 
 pub fn sumTo(comptime T: type, x: *TaggedVar, shape: []const usize) !*TaggedVar {
-    const funckey = try SumTo(T).create(x.getContext(), shape, x.getContext().current_chain.?);
+    return try sumToEx(T, x, shape, x.getContext().current_chain.?);
+}
+
+pub fn sumToEx(comptime T: type, x: *TaggedVar, shape: []const usize, chain: *Chain) !*TaggedVar {
+    const funckey = try SumTo(T).create(x.getContext(), shape, chain);
 
     return try makefunc1in1outBase(funckey, x);
 }
@@ -604,8 +629,6 @@ pub fn Sigmoid(comptime T: type) type {
 
         pub const In = T;
         pub const Out = T;
-
-        pub const ref_in_at_back = true;
 
         pub usingnamespace FuncDecorator1in1out(Self);
 
@@ -626,13 +649,17 @@ pub fn Sigmoid(comptime T: type) type {
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             const y = self.out.?;
-            const one_minus_y = try shift(T, try neg(T, y), 1.0);
-            const y_times_one_minus_y = try mul(T, y, one_minus_y);
-            return try mul(T, gy, y_times_one_minus_y);
+            const one_minus_y = try shiftEx(T, try negEx(T, y, self.base.chain), 1.0, self.base.chain);
+            const y_times_one_minus_y = try mulEx(T, y, one_minus_y, self.base.chain);
+            return try mulEx(T, gy, y_times_one_minus_y, self.base.chain);
         }
     };
 }
 
 pub fn sigmoid(comptime T: type, x: *TaggedVar) !*TaggedVar {
-    return try makefunc(Sigmoid(T), x, x.getContext().current_chain.?);
+    return try sigmoidEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn sigmoidEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Sigmoid(T), x, chain);
 }
