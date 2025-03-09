@@ -92,6 +92,7 @@ pub const Chain = struct {
     pub fn destroyFunctions(self: *Chain) void {
         while (self.func_chain) |head| {
             //  self.func_chain = head.next;
+
             head.destroy();
         }
     }
