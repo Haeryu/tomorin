@@ -29,8 +29,6 @@ pub const Context = struct {
     stream: *const Stream,
     allocator: std.mem.Allocator,
 
-    functions: std.heap.MemoryPool(Function),
-    tagged_vars: std.heap.MemoryPool(TaggedVar),
     chains: std.heap.MemoryPool(Chain),
 
     chain_head: ?*Chain,
@@ -50,8 +48,6 @@ pub const Context = struct {
             .allocator = allocator,
             .cuda_context = cuda_context,
             .stream = stream,
-            .functions = try .initPreheated(allocator, options.init_func_capacity),
-            .tagged_vars = try .initPreheated(allocator, options.init_var_capacity),
             .chains = try .initPreheated(allocator, options.init_chain_capacity),
             .options = options,
             .chain_head = null,
@@ -65,14 +61,13 @@ pub const Context = struct {
             iter = chain.next;
             chain.destroy();
         }
-        self.functions.deinit();
-        self.tagged_vars.deinit();
+
         self.chains.deinit();
     }
 
     pub fn createChain(self: *Context) !*Chain {
         const ptr = try self.chains.create();
-        ptr.* = .empty;
+        ptr.* = try .init(self.allocator, self, self.options.init_func_capacity, self.options.init_var_capacity);
 
         if (self.chain_head) |head| {
             ptr.next = head;
@@ -98,83 +93,19 @@ pub const Context = struct {
         self.chains.destroy(chain);
     }
 
-    pub fn createVariable(
-        self: *Context,
-        comptime T: type,
-        data: GPUTensor(T),
-        name: ?[]const u8,
-    ) !*TaggedVar {
-        const variable: Variable(T) = .{
-            .data = data,
-            .name = name,
-            .context = self,
-            .protected = false,
-            .prev = null,
-            .next = null,
-            .chain = self.current_chain.?,
-        };
-
-        const tagged = TaggedVar.init(T, variable);
-
-        const ptr = try self.tagged_vars.create();
-        ptr.* = tagged;
-
-        self.current_chain.?.chainVariable(ptr);
-
-        return ptr;
+    pub fn backward(self: *Context, comptime T: type, variable: *TaggedVar) !void {
+        try self.backwardEx(T, variable, self.current_chain.?);
     }
 
-    pub fn createVariableEx(
-        self: *Context,
-        comptime T: type,
-        data: GPUTensor(T),
-        name: ?[]const u8,
-        chain: *Chain,
-    ) !*TaggedVar {
-        const variable: Variable(T) = .{
-            .data = data,
-            .name = name,
-            .context = self,
-            .protected = false,
-            .prev = null,
-            .next = null,
-            .chain = chain,
-        };
-
-        const tagged = TaggedVar.init(T, variable);
-
-        const ptr = try self.tagged_vars.create();
-        ptr.* = tagged;
-
-        chain.chainVariable(ptr);
-
-        return ptr;
-    }
-
-    pub fn registerFunction(self: *Context, func: Function, chain: *Chain) !*Function {
-        const ptr = try self.functions.create();
-        ptr.* = func;
-
-        chain.chainFunction(ptr);
-
-        return ptr;
-    }
-
-    pub fn backward(
-        self: *Context,
-        comptime T: type,
-        variable: *TaggedVar,
-    ) !void {
+    pub fn backwardEx(self: *Context, comptime T: type, variable: *TaggedVar, chain: *Chain) !void {
         const variable_untagged = variable.asUntagged(T);
         const creator = variable.getCreator() orelse return error.NoCreator;
 
-        var ones = try tomo.tensor.GPUTensor(T).initAsync(variable_untagged.data.base.getShape(), self.stream);
+        var ones: tomo.tensor.GPUTensor(T) = try .initAsync(variable_untagged.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);
         try ones.fill(if (T == BF16) BF16.fromF32(1.0) else 1.0, self.stream);
 
-        const initial_grad = try self.createVariableEx(T, ones, null, creator.chain);
-        initial_grad.protect();
-        defer initial_grad.unprotect();
+        const initial_grad = try chain.createVariable(T, ones, null);
 
         variable_untagged.grad = initial_grad;
 

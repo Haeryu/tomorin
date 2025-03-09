@@ -163,7 +163,7 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
             var y = try self.forward(&self.in.?.asUntaggedConst(Self.In).data);
             errdefer y.deinitAsync(context.stream);
 
-            self.out = try context.createVariableEx(Self.Out, y.move(), null, self.base.chain);
+            self.out = try self.base.chain.createVariable(Self.Out, y.move(), null);
 
             self.base.generation = self.in.?.getGeneration();
             self.out.?.asUntagged(Self.Out).setCreator(
@@ -261,7 +261,7 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
             );
             errdefer y.deinitAsync(context.stream);
 
-            self.out = try context.createVariableEx(Self.Out, y.move(), null, self.base.chain);
+            self.out = try self.base.chain.createVariable(Self.Out, y.move(), null);
 
             self.base.generation = @max(self.in1.?.getGeneration(), self.in2.?.getGeneration());
             self.out.?.asUntagged(Self.Out).setCreator(
@@ -371,7 +371,7 @@ pub fn FuncDecorator3in1outBase(comptime Self: type) type {
             );
             errdefer y.deinitAsync(context.stream);
 
-            self.out = try context.createVariableEx(Self.Out, y.move(), null, self.base.chain);
+            self.out = try self.base.chain.createVariable(Self.Out, y.move(), null);
 
             self.base.generation = @max(self.in1.?.getGeneration(), self.in2.?.getGeneration(), self.in3.?.getGeneration());
             self.out.?.asUntagged(Self.Out).setCreator(

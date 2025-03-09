@@ -29,7 +29,7 @@ pub fn FuncDecorator3in1out(comptime Self: type) type {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
-            const func_ptr = try context.registerFunction(
+            const func_ptr = try chain.registerFunction(
                 .{
                     .ptr = self,
                     .vtable = &.{
@@ -42,7 +42,6 @@ pub fn FuncDecorator3in1out(comptime Self: type) type {
                     },
                     .chain = chain,
                 },
-                chain,
             );
 
             self.* = .{

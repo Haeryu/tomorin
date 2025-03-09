@@ -243,8 +243,8 @@ fn example3() !void {
 
     var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
         .aggressive_release = false,
-        .init_func_capacity = 0,
-        .init_var_capacity = 0,
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
     });
     defer context.deinit();
 
@@ -288,14 +288,14 @@ fn example3() !void {
     errdefer b2v.deinitAsync(&stream);
     try b2v.fill(0.0, &stream);
 
-    const x = try context.createVariable(F, xv.move(), "x");
-    const y = try context.createVariable(F, yv.move(), "y");
+    const x = try base_chain.createVariable(F, xv.move(), "x");
+    const y = try base_chain.createVariable(F, yv.move(), "y");
 
-    const w1 = try context.createVariable(F, w1v.move(), "w1");
-    const b1 = try context.createVariable(F, b1v.move(), "b1");
+    const w1 = try base_chain.createVariable(F, w1v.move(), "w1");
+    const b1 = try base_chain.createVariable(F, b1v.move(), "b1");
 
-    const w2 = try context.createVariable(F, w2v.move(), "w2");
-    const b2 = try context.createVariable(F, b2v.move(), "b2");
+    const w2 = try base_chain.createVariable(F, w2v.move(), "w2");
+    const b2 = try base_chain.createVariable(F, b2v.move(), "b2");
 
     // const gw1 = w1.detatchGrad();
     // const gb1 = b1.detatchGrad();
@@ -343,7 +343,7 @@ fn example3() !void {
             errdefer pi_4v.deinitAsync(&stream);
             try pi_4v.fill(std.math.pi / 4.0, &stream);
 
-            const pi_4 = try context.createVariableEx(F, pi_4v.move(), "pi/4", iter_chain);
+            const pi_4 = try iter_chain.createVariable(F, pi_4v.move(), "pi/4");
 
             const pi_4_y = try predict2(F, pi_4, w1, b1, w2, b2);
             try stream.sync();
@@ -360,7 +360,7 @@ fn example3() !void {
         }
 
         // try stream.sync();
-        iter_chain.destroy();
+        iter_chain.clear();
     }
 }
 
