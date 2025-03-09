@@ -7,6 +7,7 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
+const Chain = @import("chain.zig").Chain;
 
 const Variable = @import("variable.zig").Variable;
 const TaggedVar = @import("variable.zig").TaggedVar;
@@ -20,6 +21,7 @@ pub const Function = struct {
 
     prev: ?*Function = null,
     next: ?*Function = null,
+    chain: *Chain,
 
     pub const max_out = 3;
 
@@ -50,15 +52,7 @@ pub const Function = struct {
     };
 
     pub fn destroy(self: *Function) void {
-        if (self.prev) |prev| {
-            prev.next = self.next;
-        }
-        if (self.next) |next| {
-            next.prev = self.prev;
-        }
-        self.prev = null;
-        self.next = null;
-
+        self.unchain();
         self.vtable.destroy(self.ptr);
     }
 
@@ -81,11 +75,26 @@ pub const Function = struct {
     pub fn getDotAlloc(self: *const Function, var_seen_set: *TaggedVar.SeenSet) ![]u8 {
         return self.vtable.get_dot_alloc(self.ptr, var_seen_set);
     }
+
+    pub fn unchain(self: *Function) void {
+        if (self.prev) |prev| {
+            prev.next = self.next;
+        }
+        if (self.next) |next| {
+            next.prev = self.prev;
+        }
+        if (self.chain.func_chain == self) {
+            self.chain.func_chain = self.next;
+        }
+        self.prev = null;
+        self.next = null;
+    }
 };
 
 pub const FunctionBase = struct {
     context: *Context,
     func_ptr: *Function,
+    chain: *Chain,
     generation: usize = 0,
 };
 
@@ -154,7 +163,7 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
             var y = try self.forward(&self.in.?.asUntaggedConst(Self.In).data);
             errdefer y.deinitAsync(context.stream);
 
-            self.out = try context.createVariable(Self.Out, y.move(), null);
+            self.out = try context.createVariableEx(Self.Out, y.move(), null, self.base.chain);
 
             self.base.generation = self.in.?.getGeneration();
             self.out.?.asUntagged(Self.Out).setCreator(
@@ -252,7 +261,7 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
             );
             errdefer y.deinitAsync(context.stream);
 
-            self.out = try context.createVariable(Self.Out, y.move(), null);
+            self.out = try context.createVariableEx(Self.Out, y.move(), null, self.base.chain);
 
             self.base.generation = @max(self.in1.?.getGeneration(), self.in2.?.getGeneration());
             self.out.?.asUntagged(Self.Out).setCreator(
@@ -362,7 +371,7 @@ pub fn FuncDecorator3in1outBase(comptime Self: type) type {
             );
             errdefer y.deinitAsync(context.stream);
 
-            self.out = try context.createVariable(Self.Out, y.move(), null);
+            self.out = try context.createVariableEx(Self.Out, y.move(), null, self.base.chain);
 
             self.base.generation = @max(self.in1.?.getGeneration(), self.in2.?.getGeneration(), self.in3.?.getGeneration());
             self.out.?.asUntagged(Self.Out).setCreator(

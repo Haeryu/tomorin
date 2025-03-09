@@ -14,6 +14,7 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBase;
+const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
 const add = @import("function2in1out.zig").add;
@@ -23,21 +24,25 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
 
-        pub fn create(context: *Context, scalar: Self.Scalar) !*Function {
+        pub fn create(context: *Context, scalar: Self.Scalar, chain: *Chain) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
-            const func_ptr = try context.registerFunction(.{
-                .ptr = self,
-                .vtable = &.{
-                    .forward = &Base.forwardDecorated,
-                    .backward = &Base.backwardDecorated,
-                    .destroy = &Base.destroy,
-                    .get_generation = &Base.getGeneration,
-                    .enqueue = &Base.enqueue,
-                    .get_dot_alloc = &getDotAlloc,
+            const func_ptr = try context.registerFunction(
+                .{
+                    .ptr = self,
+                    .vtable = &.{
+                        .forward = &Base.forwardDecorated,
+                        .backward = &Base.backwardDecorated,
+                        .destroy = &Base.destroy,
+                        .get_generation = &Base.getGeneration,
+                        .enqueue = &Base.enqueue,
+                        .get_dot_alloc = &getDotAlloc,
+                    },
+                    .chain = chain,
                 },
-            });
+                chain,
+            );
 
             self.* = .{
                 .in = null,
@@ -46,6 +51,7 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
                 .base = .{
                     .func_ptr = func_ptr,
                     .context = context,
+                    .chain = chain,
                 },
             };
 
@@ -100,8 +106,8 @@ pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     };
 }
 
-fn makefunc(comptime F: type, x: *TaggedVar, scalar: F.Scalar) !*TaggedVar {
-    const funckey = try F.create(x.getContext(), scalar);
+fn makefunc(comptime F: type, x: *TaggedVar, scalar: F.Scalar, chain: *Chain) !*TaggedVar {
+    const funckey = try F.create(x.getContext(), scalar, chain);
 
     return try makefunc1in1outBase(funckey, x);
 }
@@ -139,7 +145,7 @@ pub fn Shift(comptime T: type) type {
 }
 
 pub fn shift(comptime T: type, x: *TaggedVar, scalar: T) !*TaggedVar {
-    return try makefunc(Shift(T), x, scalar);
+    return try makefunc(Shift(T), x, scalar, x.getContext().current_chain.?);
 }
 
 pub fn Scale(comptime T: type) type {
@@ -174,7 +180,7 @@ pub fn Scale(comptime T: type) type {
 }
 
 pub fn scale(comptime T: type, x: *TaggedVar, scalar: T) !*TaggedVar {
-    return try makefunc(Scale(T), x, scalar);
+    return try makefunc(Scale(T), x, scalar, x.getContext().current_chain.?);
 }
 
 pub fn Powf(comptime T: type) type {

@@ -14,6 +14,7 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 const FuncDecorator3in1outBase = @import("function.zig").FuncDecorator3in1outBase;
+const Chain = @import("chain.zig").Chain;
 const makefunc3in1outBase = @import("function.zig").makefunc3in1outBase;
 
 const transpose = @import("function1in1out.zig").transpose;
@@ -24,21 +25,25 @@ pub fn FuncDecorator3in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator3in1outBase(Self);
 
-        pub fn create(context: *Context) !*Function {
+        pub fn create(context: *Context, chain: *Chain) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
-            const func_ptr = try context.registerFunction(.{
-                .ptr = self,
-                .vtable = &.{
-                    .forward = &Base.forwardDecorated,
-                    .backward = &Base.backwardDecorated,
-                    .destroy = &Base.destroy,
-                    .get_generation = &Base.getGeneration,
-                    .enqueue = &Base.enqueue,
-                    .get_dot_alloc = &getDotAlloc,
+            const func_ptr = try context.registerFunction(
+                .{
+                    .ptr = self,
+                    .vtable = &.{
+                        .forward = &Base.forwardDecorated,
+                        .backward = &Base.backwardDecorated,
+                        .destroy = &Base.destroy,
+                        .get_generation = &Base.getGeneration,
+                        .enqueue = &Base.enqueue,
+                        .get_dot_alloc = &getDotAlloc,
+                    },
+                    .chain = chain,
                 },
-            });
+                chain,
+            );
 
             self.* = .{
                 .in1 = null,
@@ -48,6 +53,7 @@ pub fn FuncDecorator3in1out(comptime Self: type) type {
                 .base = .{
                     .func_ptr = func_ptr,
                     .context = context,
+                    .chain = chain,
                 },
             };
 
@@ -118,8 +124,9 @@ fn makefunc(
     x1: *TaggedVar,
     x2: *TaggedVar,
     x3: *TaggedVar,
+    chain: *Chain,
 ) !*TaggedVar {
-    const funckey = try F.create(x1.getContext());
+    const funckey = try F.create(x1.getContext(), chain);
 
     return try makefunc3in1outBase(funckey, x1, x2, x3);
 }
@@ -190,5 +197,5 @@ pub fn Linear(comptime T: type) type {
 }
 
 pub fn linear(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, x3: *TaggedVar) !*TaggedVar {
-    return try makefunc(Linear(T), x1, x2, x3);
+    return try makefunc(Linear(T), x1, x2, x3, x1.getContext().current_chain.?);
 }

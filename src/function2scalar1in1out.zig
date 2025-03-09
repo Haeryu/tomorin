@@ -14,6 +14,7 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBase;
+const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
 const add = @import("function2in1out.zig").add;
@@ -24,21 +25,26 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
 
-        pub fn create(context: *Context, scalar1: Self.Scalar1, scalar2: Self.Scalar2) !*Function {
+        pub fn create(context: *Context, scalar1: Self.Scalar1, scalar2: Self.Scalar2, chain: *Chain) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
-            const func_ptr = try context.registerFunction(.{
-                .ptr = self,
-                .vtable = &.{
-                    .forward = &Base.forwardDecorated,
-                    .backward = &Base.backwardDecorated,
-                    .destroy = &Base.destroy,
-                    .get_generation = &Base.getGeneration,
-                    .enqueue = &Base.enqueue,
-                    .get_dot_alloc = &getDotAlloc,
+            const func_ptr = try context.registerFunction(
+                .{
+                    .ptr = self,
+                    .vtable = &.{
+                        .forward = &Base.forwardDecorated,
+                        .backward = &Base.backwardDecorated,
+                        .destroy = &Base.destroy,
+                        .get_generation = &Base.getGeneration,
+                        .enqueue = &Base.enqueue,
+                        .get_dot_alloc = &getDotAlloc,
+                    },
+                    .chain = chain,
                 },
-            });
+                context.current_chain,
+                chain,
+            );
 
             self.* = .{
                 .in = null,
@@ -48,6 +54,7 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                 .base = .{
                     .func_ptr = func_ptr,
                     .context = context,
+                    .chain = chain,
                 },
             };
 

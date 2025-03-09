@@ -227,6 +227,7 @@ fn predict2(
     return y2;
 }
 
+// TODO : protect -> not bool, out from context. protext from context?
 // TODO: detatch memory stack deletion from context(allow themselves destroy temselves)
 fn example3() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -247,6 +248,9 @@ fn example3() !void {
     });
     defer context.deinit();
 
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+
     var xv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
     defer xv.deinitAsync(&stream);
     try xv.fillUniformRange(0.0, std.math.pi, &cuda_context, &stream);
@@ -265,7 +269,7 @@ fn example3() !void {
     try yv.add(&noisev, &stream);
 
     const I = 1;
-    const H = 200;
+    const H = 20;
     const O = 1;
 
     var w1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ I, H }, &stream);
@@ -298,34 +302,18 @@ fn example3() !void {
     // const gw2 = w2.detatchGrad();
     // const gb2 = b2.detatchGrad();
 
-    var gw1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ I, H }, &stream);
-    errdefer gw1v.deinitAsync(&stream);
-
-    var gb1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, H }, &stream);
-    errdefer gb1v.deinitAsync(&stream);
-
-    var gw2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ H, O }, &stream);
-    errdefer gw2v.deinitAsync(&stream);
-
-    var gb2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, O }, &stream);
-    errdefer gb2v.deinitAsync(&stream);
-
     const lr = 0.002;
     const iters = 10000;
 
-    // TODO : protect -> not bool, out from context. protext from context?
+    const iter_chain = try context.createChain();
+    context.current_chain = iter_chain;
 
-    const base_state = context.popState();
-    defer context.restoreState(base_state);
-
-    for (0..iters) |i| {
-        // err3
+    for (0..iters + 1) |i| {
         const y_pred = try predict2(F, x, w1, b1, w2, b2);
 
         const loss = try meanSquaredError(F, y, y_pred);
-        // err1
+
         try loss.backward();
-        try stream.sync();
 
         x.setGrad(null);
         y.setGrad(null);
@@ -334,24 +322,15 @@ fn example3() !void {
         const gw2 = w2.detatchGrad();
         const gb2 = b2.detatchGrad();
 
-        // err2
-        const dgw1 = try scale(F, gw1, lr);
-        const dgw2 = try scale(F, gw2, lr);
-        const dgb1 = try scale(F, gb1, lr);
-        const dgb2 = try scale(F, gb2, lr);
-        const w1_new = try sub(F, w1, dgw1);
-        var w2_new = try sub(F, w2, dgw2);
-        var b1_new = try sub(F, b1, dgb1);
-        var b2_new = try sub(F, b2, dgb2);
+        try gw1.asUntagged(F).data.scale(lr, &stream);
+        try gw2.asUntagged(F).data.scale(lr, &stream);
+        try gb1.asUntagged(F).data.scale(lr, &stream);
+        try gb2.asUntagged(F).data.scale(lr, &stream);
 
-        w1.asUntagged(F).data.deinitAsync(&stream);
-        w1.asUntagged(F).data = w1_new.asUntagged(F).data.move();
-        w2.asUntagged(F).data.deinitAsync(&stream);
-        w2.asUntagged(F).data = w2_new.asUntagged(F).data.move();
-        b1.asUntagged(F).data.deinitAsync(&stream);
-        b1.asUntagged(F).data = b1_new.asUntagged(F).data.move();
-        b2.asUntagged(F).data.deinitAsync(&stream);
-        b2.asUntagged(F).data = b2_new.asUntagged(F).data.move();
+        try w1.asUntagged(F).data.sub(&gw1.asUntagged(F).data, &stream);
+        try w2.asUntagged(F).data.sub(&gw2.asUntagged(F).data, &stream);
+        try b1.asUntagged(F).data.sub(&gb1.asUntagged(F).data, &stream);
+        try b2.asUntagged(F).data.sub(&gb2.asUntagged(F).data, &stream);
 
         // try loss.saveDot(std.fmt.comptimePrint("graph{}.dot", .{i}));
         // try gw1.saveDot(std.fmt.comptimePrint("graphgw1{}.dot", .{i}));
@@ -364,7 +343,7 @@ fn example3() !void {
             errdefer pi_4v.deinitAsync(&stream);
             try pi_4v.fill(std.math.pi / 4.0, &stream);
 
-            const pi_4 = try context.createVariable(F, pi_4v.move(), "pi/4");
+            const pi_4 = try context.createVariableEx(F, pi_4v.move(), "pi/4", iter_chain);
 
             const pi_4_y = try predict2(F, pi_4, w1, b1, w2, b2);
             try stream.sync();
@@ -380,9 +359,8 @@ fn example3() !void {
             std.debug.print("pi_4: {d}\n", .{pi_4_y_host});
         }
 
-        try stream.sync();
-        context.destroyFunctions();
-        context.releaseVariables();
+        // try stream.sync();
+        iter_chain.destroy();
     }
 }
 

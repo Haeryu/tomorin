@@ -7,6 +7,7 @@ const CudaContext = tomo.cuda_context.CudaContext;
 const Rc = @import("rc.zig").Rc;
 const Weak = @import("rc.zig").Weak;
 const Context = @import("context.zig").Context;
+const Chain = @import("chain.zig").Chain;
 
 const Function = @import("function.zig").Function;
 
@@ -20,6 +21,8 @@ pub fn Variable(comptime T: type) type {
         context: *Context,
         protected: bool = false,
 
+        chain: *Chain,
+
         prev: ?*TaggedVar = null,
         next: ?*TaggedVar = null,
 
@@ -32,24 +35,27 @@ pub fn Variable(comptime T: type) type {
 
             self.data.deinitAsync(self.context.stream);
 
+            self.unchain();
+
+            self.creator = null;
+            self.grad = null;
+        }
+
+        pub fn unchain(self: *Self) void {
             if (self.prev) |prev| {
                 prev.setNext(self.next);
             }
             if (self.next) |next| {
                 next.setPrev(self.prev);
             }
+            if (self.chain.var_chain) |head| {
+                if (head.asUntagged(T) == self) {
+                    self.chain.var_chain = self.getNext();
+                }
+            }
+
             self.prev = null;
             self.next = null;
-
-            self.creator = null;
-
-            // if (self.context.options.count_variables) {
-            //     self.context.variable_count -= 1;
-            // }
-            // if (self.grad) |grad| {
-            //     grad.release();
-            // }
-            self.grad = null;
         }
 
         pub fn len(self: *const Self) usize {

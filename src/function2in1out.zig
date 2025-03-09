@@ -14,6 +14,7 @@ const Variable = @import("variable.zig").Variable;
 const Function = @import("function.zig").Function;
 const FunctionBase = @import("function.zig").FunctionBase;
 const FuncDecorator2in1outBase = @import("function.zig").FuncDecorator2in1outBase;
+const Chain = @import("chain.zig").Chain;
 const makefunc2in1outBase = @import("function.zig").makefunc2in1outBase;
 
 const neg = @import("function1in1out.zig").neg;
@@ -27,21 +28,25 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator2in1outBase(Self);
 
-        pub fn create(context: *Context) !*Function {
+        pub fn create(context: *Context, chain: *Chain) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
-            const func_ptr = try context.registerFunction(.{
-                .ptr = self,
-                .vtable = &.{
-                    .forward = &Base.forwardDecorated,
-                    .backward = &Base.backwardDecorated,
-                    .destroy = &Base.destroy,
-                    .get_generation = &Base.getGeneration,
-                    .enqueue = &Base.enqueue,
-                    .get_dot_alloc = &getDotAlloc,
+            const func_ptr = try context.registerFunction(
+                .{
+                    .ptr = self,
+                    .vtable = &.{
+                        .forward = &Base.forwardDecorated,
+                        .backward = &Base.backwardDecorated,
+                        .destroy = &Base.destroy,
+                        .get_generation = &Base.getGeneration,
+                        .enqueue = &Base.enqueue,
+                        .get_dot_alloc = &getDotAlloc,
+                    },
+                    .chain = chain,
                 },
-            });
+                chain,
+            );
 
             self.* = .{
                 .in1 = null,
@@ -50,6 +55,7 @@ pub fn FuncDecorator2in1out(comptime Self: type) type {
                 .base = .{
                     .func_ptr = func_ptr,
                     .context = context,
+                    .chain = chain,
                 },
             };
 
@@ -108,8 +114,9 @@ fn makefunc(
     comptime F: type,
     x1: *TaggedVar,
     x2: *TaggedVar,
+    chain: *Chain,
 ) !*TaggedVar {
-    const funckey = try F.create(x1.getContext());
+    const funckey = try F.create(x1.getContext(), chain);
 
     return try makefunc2in1outBase(funckey, x1, x2);
 }
@@ -153,7 +160,7 @@ pub fn add(
     x1: *TaggedVar,
     x2: *TaggedVar,
 ) !*TaggedVar {
-    return try makefunc(Add(T), x1, x2);
+    return try makefunc(Add(T), x1, x2, x1.getContext().current_chain.?);
 }
 
 pub fn Sub(comptime T: type) type {
@@ -191,7 +198,7 @@ pub fn Sub(comptime T: type) type {
 }
 
 pub fn sub(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(Sub(T), x1, x2);
+    return try makefunc(Sub(T), x1, x2, x1.getContext().current_chain.?);
 }
 
 pub fn Mul(comptime T: type) type {
@@ -229,7 +236,7 @@ pub fn Mul(comptime T: type) type {
 }
 
 pub fn mul(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(Mul(T), x1, x2);
+    return try makefunc(Mul(T), x1, x2, x1.getContext().current_chain.?);
 }
 
 pub fn Div(comptime T: type) type {
@@ -331,7 +338,7 @@ pub fn MatMul(comptime T: type) type {
 }
 
 pub fn matmul(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(MatMul(T), x1, x2);
+    return try makefunc(MatMul(T), x1, x2, x1.getContext().current_chain.?);
 }
 
 pub fn MeanSquaredError(comptime T: type) type {
@@ -381,5 +388,5 @@ pub fn MeanSquaredError(comptime T: type) type {
 }
 
 pub fn meanSquaredError(comptime T: type, x1: *TaggedVar, x2: *TaggedVar) !*TaggedVar {
-    return try makefunc(MeanSquaredError(T), x1, x2);
+    return try makefunc(MeanSquaredError(T), x1, x2, x1.getContext().current_chain.?);
 }
