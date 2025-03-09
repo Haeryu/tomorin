@@ -230,19 +230,18 @@ fn predict2(
 // TODO : protect -> not bool, out from context. protext from context?
 // TODO: detatch memory stack deletion from context(allow themselves destroy temselves)
 fn example3() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
 
-    var stream = try tomo.stream.Stream.create();
+    var stream: tomo.stream.Stream = try .create();
     defer stream.destroy();
 
-    var cuda_context = try tomo.cuda_context.CudaContext.init();
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
     defer cuda_context.deinit();
 
-    var context = try tomorin.context.Context.init(allocator, &cuda_context, &stream, .{
-        .aggressive_release = false,
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
         .init_func_capacity = 10,
         .init_var_capacity = 10,
     });
@@ -251,11 +250,11 @@ fn example3() !void {
     const base_chain = try context.createChain();
     context.current_chain = base_chain;
 
-    var xv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
+    var xv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 100, 1 }, &stream);
     defer xv.deinitAsync(&stream);
     try xv.fillUniformRange(0.0, std.math.pi, &cuda_context, &stream);
 
-    var noisev = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
+    var noisev: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 100, 1 }, &stream);
     defer noisev.deinitAsync(&stream);
     try noisev.fillUniformRange(-0.001, 0.001, &cuda_context, &stream);
 
@@ -272,19 +271,19 @@ fn example3() !void {
     const H = 20;
     const O = 1;
 
-    var w1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ I, H }, &stream);
+    var w1v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ I, H }, &stream);
     errdefer w1v.deinitAsync(&stream);
     try w1v.fillUniformRange(-0.1, 0.1, &cuda_context, &stream);
 
-    var b1v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, H }, &stream);
+    var b1v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, H }, &stream);
     errdefer b1v.deinitAsync(&stream);
     try b1v.fill(0.0, &stream);
 
-    var w2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ H, O }, &stream);
+    var w2v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ H, O }, &stream);
     errdefer w2v.deinitAsync(&stream);
     try w2v.fillUniformRange(-0.1, 0.1, &cuda_context, &stream);
 
-    var b2v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, O }, &stream);
+    var b2v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, O }, &stream);
     errdefer b2v.deinitAsync(&stream);
     try b2v.fill(0.0, &stream);
 
@@ -339,7 +338,7 @@ fn example3() !void {
         // try gb2.saveDot(std.fmt.comptimePrint("graphgb2{}.dot", .{i}));
 
         if (i % 1000 == 0) {
-            var pi_4v = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, 1 }, &stream);
+            var pi_4v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, 1 }, &stream);
             errdefer pi_4v.deinitAsync(&stream);
             try pi_4v.fill(std.math.pi / 4.0, &stream);
 
@@ -364,6 +363,31 @@ fn example3() !void {
     }
 }
 
+fn example4() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream: tomo.stream.Stream = try .create();
+    defer stream.destroy();
+
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
+    defer cuda_context.deinit();
+
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+
+    var lin: tomorin.layer.Linear = try .init(F, 1, 1, &context, base_chain);
+    defer lin.destroy();
+}
+
 pub fn main() !void {
-    try example3();
+    try example4();
 }

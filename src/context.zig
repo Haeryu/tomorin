@@ -17,7 +17,6 @@ const function = @import("function.zig");
 const Snapshot = @import("snapshot.zig").Snapshot;
 
 pub const ContextOptions = struct {
-    aggressive_release: bool = false,
     verbose_dot: bool = false,
     init_var_capacity: usize = 0,
     init_func_capacity: usize = 0,
@@ -109,10 +108,10 @@ pub const Context = struct {
 
         variable_untagged.grad = initial_grad;
 
-        var function_queue = Function.Queue.init(self.allocator, {});
+        var function_queue: Function.Queue = .init(self.allocator, {});
         defer function_queue.deinit();
 
-        var seen_set = Function.SeenSet.init(self.allocator);
+        var seen_set: Function.SeenSet = .init(self.allocator);
         defer seen_set.deinit();
 
         try function_queue.add(creator);
