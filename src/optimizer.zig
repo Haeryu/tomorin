@@ -217,20 +217,23 @@ pub fn SGD(comptime T: type) type {
 
 pub fn MomentumSGD(comptime T: type) type {
     return struct {
-        lr: T = 0.01,
-        momentum: T = 0.9,
+        hyper_params: HyperParams,
         vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
         base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
+        pub const HyperParams = struct {
+            lr: T = 0.01,
+            momentum: T = 0.9,
+        };
+
         const Self = @This();
 
-        pub fn init(lr: T, momentum: T, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
             return .{
-                .lr = lr,
-                .momentum = momentum,
+                .hyper_params = hyper_params,
                 .context = context,
                 .vs = .init(context.allocator),
                 .base = try .init(option, context),
@@ -257,11 +260,11 @@ pub fn MomentumSGD(comptime T: type) type {
             }
 
             var v = self.vs.getPtr(param).?;
-            try v.scale(self.momentum, self.context.stream);
+            try v.scale(self.hyper_params.momentum, self.context.stream);
 
             var gw = try param.refGrad().?.asUntagged(T).data.cloneAsync(self.context.stream);
             defer gw.deinitAsync(self.context.stream);
-            try gw.scale(self.lr, self.context.stream);
+            try gw.scale(self.hyper_params.lr, self.context.stream);
 
             try v.sub(&gw, self.context.stream);
 
@@ -272,8 +275,7 @@ pub fn MomentumSGD(comptime T: type) type {
 
 pub fn AdaGrad(comptime T: type) type {
     return struct {
-        lr: T = 0.001,
-        eps: T = 1e-8,
+        hyper_params: HyperParams,
         hs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
         base: OptimizerBase(T),
@@ -281,12 +283,16 @@ pub fn AdaGrad(comptime T: type) type {
 
         pub usingnamespace Optimizer(Self);
 
+        pub const HyperParams = struct {
+            lr: T = 0.001,
+            eps: T = 1e-8,
+        };
+
         const Self = @This();
 
-        pub fn init(lr: T, eps: T, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
             return .{
-                .lr = lr,
-                .eps = eps,
+                .hyper_params = hyper_params,
                 .context = context,
                 .hs = .init(context.allocator),
                 .base = try .init(option, context),
@@ -322,12 +328,12 @@ pub fn AdaGrad(comptime T: type) type {
 
             var grad_lr = try param.refGrad().?.asUntagged(T).data.cloneAsync(self.context.stream);
             defer grad_lr.deinitAsync(self.context.stream);
-            try grad_lr.scale(self.lr, self.context.stream);
+            try grad_lr.scale(self.hyper_params.lr, self.context.stream);
 
             var h_sqrt_plus_eps = try h.cloneAsync(self.context.stream);
             defer h_sqrt_plus_eps.deinitAsync(self.context.stream);
             try h_sqrt_plus_eps.sqrt(self.context.stream);
-            try h_sqrt_plus_eps.shift(self.eps, self.context.stream);
+            try h_sqrt_plus_eps.shift(self.hyper_params.eps, self.context.stream);
 
             try grad_lr.divide(&h_sqrt_plus_eps, self.context.stream);
 
@@ -338,8 +344,7 @@ pub fn AdaGrad(comptime T: type) type {
 
 pub fn AdaDelta(comptime T: type) type {
     return struct {
-        rho: T = 0.95,
-        eps: T = 1e-6,
+        hyper_params: HyperParams,
         msg: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
         msdx: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
@@ -347,12 +352,16 @@ pub fn AdaDelta(comptime T: type) type {
         base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
+        pub const HyperParams = struct {
+            rho: T = 0.95,
+            eps: T = 1e-6,
+        };
+
         const Self = @This();
 
-        pub fn init(rho: T, eps: T, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
             return .{
-                .rho = rho,
-                .eps = eps,
+                .hyper_params = hyper_params,
                 .context = context,
                 .msg = .init(context.allocator),
                 .msdx = .init(context.allocator),
@@ -396,21 +405,21 @@ pub fn AdaDelta(comptime T: type) type {
             defer grad.deinitAsync(self.context.stream);
 
             // Update msg: msg = rho * msg + (1 - rho) * grad^2
-            try msg.scale(self.rho, self.context.stream);
+            try msg.scale(self.hyper_params.rho, self.context.stream);
             var grad_sq = try grad.cloneAsync(self.context.stream);
             defer grad_sq.deinitAsync(self.context.stream);
             try grad_sq.product(&grad, self.context.stream); // grad^2
-            try grad_sq.scale(1 - self.rho, self.context.stream);
+            try grad_sq.scale(1 - self.hyper_params.rho, self.context.stream);
             try msg.add(&grad_sq, self.context.stream);
 
             // Compute dx: dx = sqrt((msdx + eps) / (msg + eps)) * grad
             var msdx_eps = try msdx.cloneAsync(self.context.stream);
             defer msdx_eps.deinitAsync(self.context.stream);
-            try msdx_eps.shift(self.eps, self.context.stream); // msdx + eps
+            try msdx_eps.shift(self.hyper_params.eps, self.context.stream); // msdx + eps
 
             var msg_eps = try msg.cloneAsync(self.context.stream);
             defer msg_eps.deinitAsync(self.context.stream);
-            try msg_eps.shift(self.eps, self.context.stream); // msg + eps
+            try msg_eps.shift(self.hyper_params.eps, self.context.stream); // msg + eps
 
             var ratio = try msdx_eps.cloneAsync(self.context.stream);
             defer ratio.deinitAsync(self.context.stream);
@@ -421,11 +430,11 @@ pub fn AdaDelta(comptime T: type) type {
             try dx.product(&grad, self.context.stream); // dx = sqrt(...) * grad
 
             // Update msdx: msdx = rho * msdx + (1 - rho) * dx^2
-            try msdx.scale(self.rho, self.context.stream);
+            try msdx.scale(self.hyper_params.rho, self.context.stream);
             var dx_sq = try dx.cloneAsync(self.context.stream);
             defer dx_sq.deinitAsync(self.context.stream);
             try dx_sq.product(&dx, self.context.stream); // dx^2
-            try dx_sq.scale(1 - self.rho, self.context.stream);
+            try dx_sq.scale(1 - self.hyper_params.rho, self.context.stream);
             try msdx.add(&dx_sq, self.context.stream);
 
             // Update parameter: param -= dx
@@ -437,26 +446,28 @@ pub fn AdaDelta(comptime T: type) type {
 pub fn Adam(comptime T: type) type {
     return struct {
         t: usize,
-        alpha: T = 0.001,
-        beta1: T = 0.9,
-        beta2: T = 0.999,
-        eps: T = 1e-8,
+        hyper_params: HyperParams,
         ms: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
         vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
         base: OptimizerBase(T),
+
+        pub const HyperParams = struct {
+            alpha: T = 0.001,
+            beta1: T = 0.9,
+            beta2: T = 0.999,
+            eps: T = 1e-8,
+        };
+
         pub usingnamespace Optimizer(Self);
 
         const Self = @This();
 
-        pub fn init(alpha: T, beta1: T, beta2: T, eps: T, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
             return .{
                 .t = 0,
-                .alpha = alpha,
-                .beta1 = beta1,
-                .beta2 = beta2,
-                .eps = eps,
+                .hyper_params = hyper_params,
                 .context = context,
                 .ms = .init(context.allocator),
                 .vs = .init(context.allocator),
@@ -483,9 +494,9 @@ pub fn Adam(comptime T: type) type {
             self.t += 1;
         }
         pub fn calclr(self: *const Self) T {
-            const fix1 = 1.0 - std.math.pow(T, self.beta1, @floatFromInt(self.t));
-            const fix2 = 1.0 - std.math.pow(T, self.beta2, @floatFromInt(self.t));
-            return self.alpha * @sqrt(fix2) / fix1;
+            const fix1 = 1.0 - std.math.pow(T, self.hyper_params.beta1, @floatFromInt(self.t));
+            const fix2 = 1.0 - std.math.pow(T, self.hyper_params.beta2, @floatFromInt(self.t));
+            return self.hyper_params.alpha * @sqrt(fix2) / fix1;
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -509,24 +520,24 @@ pub fn Adam(comptime T: type) type {
             defer grad.deinitAsync(self.context.stream);
 
             // Update first moment: m = beta1 * m + (1 - beta1) * grad
-            try m.scale(self.beta1, self.context.stream);
+            try m.scale(self.hyper_params.beta1, self.context.stream);
             var temp_m = try grad.cloneAsync(self.context.stream);
             defer temp_m.deinitAsync(self.context.stream);
-            try temp_m.scale(1.0 - self.beta1, self.context.stream);
+            try temp_m.scale(1.0 - self.hyper_params.beta1, self.context.stream);
 
             try m.add(&temp_m, self.context.stream);
 
             // Update second moment: v = beta2 * v + (1 - beta2) * (grad * grad)
-            try v.scale(self.beta2, self.context.stream);
+            try v.scale(self.hyper_params.beta2, self.context.stream);
             var grad_sq = try grad.cloneAsync(self.context.stream);
             defer grad_sq.deinitAsync(self.context.stream);
             try grad_sq.product(&grad, self.context.stream); // Element-wise grad * grad
-            try grad_sq.scale(1.0 - self.beta2, self.context.stream);
+            try grad_sq.scale(1.0 - self.hyper_params.beta2, self.context.stream);
             try v.add(&grad_sq, self.context.stream);
 
             // Compute bias correction factors
-            const fix1 = 1.0 - std.math.pow(T, self.beta1, @floatFromInt(self.t));
-            const fix2 = 1.0 - std.math.pow(T, self.beta2, @floatFromInt(self.t));
+            const fix1 = 1.0 - std.math.pow(T, self.hyper_params.beta1, @floatFromInt(self.t));
+            const fix2 = 1.0 - std.math.pow(T, self.hyper_params.beta2, @floatFromInt(self.t));
 
             // Compute bias-corrected estimates: m_hat and v_hat
             var m_hat = try m.cloneAsync(self.context.stream);
@@ -541,12 +552,12 @@ pub fn Adam(comptime T: type) type {
             var v_sqrt = try v_hat.cloneAsync(self.context.stream);
             defer v_sqrt.deinitAsync(self.context.stream);
             try v_sqrt.sqrt(self.context.stream); // sqrt(v_hat)
-            try v_sqrt.shift(self.eps, self.context.stream); // sqrt(v_hat) + eps
+            try v_sqrt.shift(self.hyper_params.eps, self.context.stream); // sqrt(v_hat) + eps
 
             var update = try m_hat.cloneAsync(self.context.stream);
             defer update.deinitAsync(self.context.stream);
             try update.divide(&v_sqrt, self.context.stream); // m_hat / (sqrt(v_hat) + eps)
-            try update.scale(self.alpha, self.context.stream); // alpha * m_hat / (sqrt(v_hat) + eps)
+            try update.scale(self.hyper_params.alpha, self.context.stream); // alpha * m_hat / (sqrt(v_hat) + eps)
 
             try self.context.stream.sync();
 

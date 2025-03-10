@@ -533,12 +533,10 @@ fn example5() !void {
     var model: tomorin.layer.MLP(F, 2) = try .init(&.{ 10, 1 }, &context, base_chain);
     defer model.destroy();
 
-    //var optimizer = try tomorin.optimizer.MomentumSGD(F).init(0.01, 0.9, &context, .{});
-    // var optimizer = try tomorin.optimizer.AdaGrad(F).init(0.001, 1e-8, &context, .{});
-    //var optimizer = try tomorin.optimizer.AdaDelta(F).init(0.95, 1e-4, &context, .{});
-    var optimizer = try tomorin.optimizer.Adam(F).init(0.001, 0.9, 0.999, 1e-8, &context, .{
-        //.max_norm = 1.0,
-    });
+    // var optimizer = try tomorin.optimizer.MomentumSGD(F).init(.{}, &context, .{});
+    // var optimizer = try tomorin.optimizer.AdaGrad(F).init(.{}, &context, .{});
+    // var optimizer = try tomorin.optimizer.AdaDelta(F).init(.{}, &context, .{});
+    var optimizer = try tomorin.optimizer.Adam(F).init(.{}, &context, .{});
     defer optimizer.deinit();
 
     const iter_chain = try context.createChain();
