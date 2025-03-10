@@ -528,7 +528,7 @@ fn example5() !void {
     const x = try base_chain.createVariable(F, xv.move(), "x");
     const y = try base_chain.createVariable(F, yv.move(), "y");
 
-    var model: tomorin.layer.MLP2(F, 2, sigmoidEx) = try .init(&.{ 10, 1 }, &context, base_chain);
+    var model: tomorin.layer.MLP(F, 2) = try .init(&.{ 10, 1 }, &context, base_chain);
     defer model.destroy();
 
     const iter_chain = try context.createChain();
@@ -537,7 +537,7 @@ fn example5() !void {
     const lr = 0.1;
     const iters = 10000;
     for (0..iters + 1) |i| {
-        const y_pred = try model.forward(x, iter_chain);
+        const y_pred = try model.forward(x, iter_chain, sigmoidEx);
 
         const loss = try meanSquaredErrorEx(F, y, y_pred, iter_chain);
 
@@ -564,7 +564,7 @@ fn example5() !void {
 
             const pi_2 = try iter_chain.createVariable(F, pi_2v.move(), "pi/2");
 
-            const pi_2_y = try model.forward(pi_2, iter_chain);
+            const pi_2_y = try model.forward(pi_2, iter_chain, sigmoidEx);
             try stream.sync();
 
             var loss_host = try loss.asUntagged(F).data.toHost(allocator, &stream);

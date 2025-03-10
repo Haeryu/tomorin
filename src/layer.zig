@@ -212,7 +212,6 @@ pub fn Linear(comptime T: type) type {
 pub fn MLP(
     comptime T: type,
     comptime layers_count: comptime_int,
-    comptime activation: fn (comptime T: type, x: *TaggedVar, chain: *Chain) anyerror!*TaggedVar,
 ) type {
     return struct {
         pub usingnamespace LayerDecorator(Self);
@@ -259,6 +258,7 @@ pub fn MLP(
             self: *Self,
             x: *TaggedVar,
             chain: *Chain,
+            comptime activation: fn (comptime T: type, x: *TaggedVar, chain: *Chain) anyerror!*TaggedVar,
         ) !*TaggedVar {
             var y: *TaggedVar = x;
             inline for (0..layers_count - 1) |i| {
