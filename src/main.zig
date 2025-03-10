@@ -533,10 +533,10 @@ fn example5() !void {
     var model: tomorin.layer.MLP(F, 2) = try .init(&.{ 10, 1 }, &context, base_chain);
     defer model.destroy();
 
-    // var optimizer = try tomorin.optimizer.MomentumSGD(F).init(.{}, &context, .{});
-    // var optimizer = try tomorin.optimizer.AdaGrad(F).init(.{}, &context, .{});
-    // var optimizer = try tomorin.optimizer.AdaDelta(F).init(.{}, &context, .{});
-    var optimizer = try tomorin.optimizer.Adam(F).init(.{}, &context, .{});
+    // var optimizer :tomorin.optimizer.MomentumSGD(F)= try .init(.default, &context);
+    // var optimizer:tomorin.optimizer.AdaGrad(F) = try .init(.default,  &context);
+    // var optimizer:tomorin.optimizer.AdaDelta(F) = try .init(.default,  &context);
+    var optimizer: tomorin.optimizer.Adam(F) = try .init(.default, &context);
     defer optimizer.deinit();
 
     const iter_chain = try context.createChain();
@@ -544,7 +544,7 @@ fn example5() !void {
 
     const iters = 10000;
     for (0..iters + 1) |i| {
-        const y_pred = try model.forward(x, iter_chain, sigmoidEx);
+        const y_pred = try model.forward(x, sigmoidEx, iter_chain);
 
         const loss = try meanSquaredErrorEx(F, y, y_pred, iter_chain);
 
@@ -557,6 +557,7 @@ fn example5() !void {
         try optimizer.update(&model.getParams());
 
         if (i % 1000 == 0) {
+            std.debug.print("{}\n", .{i / 1000});
             try stream.sync();
             var pi_2v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, 1 }, &stream);
             errdefer pi_2v.deinitAsync(&stream);
@@ -564,7 +565,7 @@ fn example5() !void {
 
             const pi_2 = try iter_chain.createVariable(F, pi_2v.move(), "pi/2");
 
-            const pi_2_y = try model.forward(pi_2, iter_chain, sigmoidEx);
+            const pi_2_y = try model.forward(pi_2, sigmoidEx, iter_chain);
             try stream.sync();
 
             var loss_host = try loss.asUntagged(F).data.toHost(allocator, &stream);

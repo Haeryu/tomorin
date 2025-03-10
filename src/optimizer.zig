@@ -119,57 +119,45 @@ pub const FreezeParam = struct {
     }
 };
 
-pub fn HookOption(comptime T: type) type {
-    return struct {
-        weight_decay_rate: ?T = null,
-        max_norm: ?T = null,
-        freeze_params: ?[]const []?*TaggedVar = null,
-    };
-}
+// pub fn HookOption(comptime T: type) type {
+//     return struct {
+//         weight_decay_rate: ?T = null,
+//         max_norm: ?T = null,
+//         freeze_params: ?[]const []?*TaggedVar = null,
+//     };
+// }
 
-pub fn OptimizerBase(comptime T: type) type {
-    return struct {
-        weight_decay: ?WeightDecay(T),
-        clip_grad: ?ClipGrad(T),
-        freeze_param: ?FreezeParam,
+// pub fn OptimizerBase(comptime T: type) type {
+//     return struct {
+//         weight_decay: ?WeightDecay(T),
+//         clip_grad: ?ClipGrad(T),
+//         freeze_param: ?FreezeParam,
 
-        const Self = @This();
+//         const Self = @This();
 
-        pub fn init(option: HookOption(T), context: *Context) !Self {
-            const weight_decay = if (option.weight_decay_rate) |r| WeightDecay(T).init(r, context) else null;
-            const clip_grad = if (option.max_norm) |m| ClipGrad(T).init(m, context) else null;
-            const freeze_param = if (option.freeze_params) |ps| try FreezeParam.init(ps, context) else null;
+//         pub fn init(option: HookOption(T), context: *Context) !Self {
+//             const weight_decay = if (option.weight_decay_rate) |r| WeightDecay(T).init(r, context) else null;
+//             const clip_grad = if (option.max_norm) |m| ClipGrad(T).init(m, context) else null;
+//             const freeze_param = if (option.freeze_params) |ps| try FreezeParam.init(ps, context) else null;
 
-            return .{
-                .weight_decay = weight_decay,
-                .clip_grad = clip_grad,
-                .freeze_param = freeze_param,
-            };
-        }
+//             return .{
+//                 .weight_decay = weight_decay,
+//                 .clip_grad = clip_grad,
+//                 .freeze_param = freeze_param,
+//             };
+//         }
 
-        pub fn deinit(self: *Self) void {
-            if (self.freeze_param) |*fp| {
-                fp.deinit();
-            }
-        }
-    };
-}
+//         pub fn deinit(self: *Self) void {
+//             if (self.freeze_param) |*fp| {
+//                 fp.deinit();
+//             }
+//         }
+//     };
+// }
 
 pub fn Optimizer(comptime Self: type) type {
     return struct {
         pub fn update(self: *Self, params: []const ?*TaggedVar) !void {
-            if (self.base.weight_decay) |wd| {
-                try wd.call(params);
-            }
-
-            if (self.base.clip_grad) |cg| {
-                try cg.call(params);
-            }
-
-            if (self.base.freeze_param) |*fp| {
-                try fp.call();
-            }
-
             if (@hasDecl(Self, "preupdate")) {
                 self.preupdate();
             }
@@ -185,31 +173,29 @@ pub fn Optimizer(comptime Self: type) type {
 
 pub fn SGD(comptime T: type) type {
     return struct {
-        lr: T,
+        hyper_params: HyperParams,
 
         context: *Context,
-        base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
+
+        pub const HyperParams = struct {
+            lr: T,
+        };
 
         const Self = @This();
 
-        pub fn init(lr: T, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context) !Self {
             return .{
-                .lr = lr,
+                .hyper_params = hyper_params,
                 .context = context,
-                .base = try .init(option, context),
             };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
             var gp = try param.refGrad().?.asUntagged(T).data.cloneAsync(self.context.stream);
             defer gp.deinitAsync(self.context.stream);
 
-            try gp.scale(self.lr, self.context.stream);
+            try gp.scale(self.hyper_params.lr, self.context.stream);
             try param.asUntagged(T).data.sub(&gp, self.context.stream);
         }
     };
@@ -221,22 +207,22 @@ pub fn MomentumSGD(comptime T: type) type {
         vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
-        base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
         pub const HyperParams = struct {
             lr: T = 0.01,
             momentum: T = 0.9,
+
+            pub const default: HyperParams = .{};
         };
 
         const Self = @This();
 
-        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context) !Self {
             return .{
                 .hyper_params = hyper_params,
                 .context = context,
                 .vs = .init(context.allocator),
-                .base = try .init(option, context),
             };
         }
 
@@ -246,7 +232,6 @@ pub fn MomentumSGD(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.vs.deinit();
-            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -278,7 +263,6 @@ pub fn AdaGrad(comptime T: type) type {
         hyper_params: HyperParams,
         hs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
-        base: OptimizerBase(T),
         context: *Context,
 
         pub usingnamespace Optimizer(Self);
@@ -286,16 +270,17 @@ pub fn AdaGrad(comptime T: type) type {
         pub const HyperParams = struct {
             lr: T = 0.001,
             eps: T = 1e-8,
+
+            pub const default: HyperParams = .{};
         };
 
         const Self = @This();
 
-        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context) !Self {
             return .{
                 .hyper_params = hyper_params,
                 .context = context,
                 .hs = .init(context.allocator),
-                .base = try .init(option, context),
             };
         }
 
@@ -305,7 +290,6 @@ pub fn AdaGrad(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.hs.deinit();
-            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -349,23 +333,23 @@ pub fn AdaDelta(comptime T: type) type {
         msdx: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
-        base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
         pub const HyperParams = struct {
             rho: T = 0.95,
             eps: T = 1e-6,
+
+            pub const default: HyperParams = .{};
         };
 
         const Self = @This();
 
-        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context) !Self {
             return .{
                 .hyper_params = hyper_params,
                 .context = context,
                 .msg = .init(context.allocator),
                 .msdx = .init(context.allocator),
-                .base = try .init(option, context),
             };
         }
 
@@ -381,7 +365,6 @@ pub fn AdaDelta(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.msdx.deinit();
-            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -451,27 +434,27 @@ pub fn Adam(comptime T: type) type {
         vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
-        base: OptimizerBase(T),
 
         pub const HyperParams = struct {
             alpha: T = 0.001,
             beta1: T = 0.9,
             beta2: T = 0.999,
             eps: T = 1e-8,
+
+            pub const default: HyperParams = .{};
         };
 
         pub usingnamespace Optimizer(Self);
 
         const Self = @This();
 
-        pub fn init(hyper_params: HyperParams, context: *Context, option: HookOption(T)) !Self {
+        pub fn init(hyper_params: HyperParams, context: *Context) !Self {
             return .{
                 .t = 0,
                 .hyper_params = hyper_params,
                 .context = context,
                 .ms = .init(context.allocator),
                 .vs = .init(context.allocator),
-                .base = try .init(option, context),
             };
         }
 
@@ -487,7 +470,6 @@ pub fn Adam(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.vs.deinit();
-            self.base.deinit();
         }
 
         pub fn preupdate(self: *Self) void {
