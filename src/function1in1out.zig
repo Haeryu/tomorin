@@ -614,7 +614,6 @@ pub fn sumTo(comptime T: type, x: *TaggedVar, shape: []const usize) !*TaggedVar 
 
 pub fn sumToEx(comptime T: type, x: *TaggedVar, shape: []const usize, chain: *Chain) !*TaggedVar {
     const funckey = try SumTo(T).create(x.getContext(), shape, chain);
-
     return try makefunc1in1outBase(funckey, x);
 }
 

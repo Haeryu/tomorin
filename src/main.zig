@@ -26,6 +26,8 @@ const sigmoidEx = tomorin.function.sigmoidEx;
 const linear = tomorin.function.linear;
 const TaggedVar = tomorin.variable.TaggedVar;
 
+const dbg = tomorin.util.debugPrintGpuTensor;
+
 const F = f32;
 
 fn factorial(x: f64) f64 {
@@ -535,7 +537,7 @@ fn example5() !void {
     // var optimizer = try tomorin.optimizer.AdaGrad(F).init(0.001, 1e-8, &context, .{});
     //var optimizer = try tomorin.optimizer.AdaDelta(F).init(0.95, 1e-4, &context, .{});
     var optimizer = try tomorin.optimizer.Adam(F).init(0.001, 0.9, 0.999, 1e-8, &context, .{
-        .max_norm = 1.0,
+        //.max_norm = 1.0,
     });
     defer optimizer.deinit();
 

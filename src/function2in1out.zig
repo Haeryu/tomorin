@@ -378,7 +378,7 @@ pub fn MeanSquaredError(comptime T: type) type {
 
             try diff.product(&diff, context.stream);
 
-            var sum = try diff.sum(context.allocator, &.{}, true, context.stream);
+            var sum = try diff.sum(context.allocator, null, true, context.stream);
             defer sum.deinitAsync(context.stream);
 
             try sum.scale(1.0 / @as(T, @floatFromInt(diff.base.countElem())), context.stream);

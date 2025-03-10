@@ -5,6 +5,8 @@ const Context = @import("context.zig").Context;
 const Chain = @import("chain.zig").Chain;
 const GPUTensor = tomo.tensor.GPUTensor;
 
+const dbg = @import("util.zig").debugPrintGpuTensor;
+
 pub fn WeightDecay(comptime T: type) type {
     return struct {
         rate: T,
@@ -511,6 +513,7 @@ pub fn Adam(comptime T: type) type {
             var temp_m = try grad.cloneAsync(self.context.stream);
             defer temp_m.deinitAsync(self.context.stream);
             try temp_m.scale(1.0 - self.beta1, self.context.stream);
+
             try m.add(&temp_m, self.context.stream);
 
             // Update second moment: v = beta2 * v + (1 - beta2) * (grad * grad)
@@ -544,6 +547,8 @@ pub fn Adam(comptime T: type) type {
             defer update.deinitAsync(self.context.stream);
             try update.divide(&v_sqrt, self.context.stream); // m_hat / (sqrt(v_hat) + eps)
             try update.scale(self.alpha, self.context.stream); // alpha * m_hat / (sqrt(v_hat) + eps)
+
+            try self.context.stream.sync();
 
             // Apply the update: param.data -= update
             try param.asUntagged(T).data.sub(&update, self.context.stream);
