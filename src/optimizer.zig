@@ -204,7 +204,7 @@ pub fn SGD(comptime T: type) type {
 pub fn MomentumSGD(comptime T: type) type {
     return struct {
         hyper_params: HyperParams,
-        vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
+        vs: std.AutoArrayHashMapUnmanaged(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
         pub usingnamespace Optimizer(Self);
@@ -222,7 +222,7 @@ pub fn MomentumSGD(comptime T: type) type {
             return .{
                 .hyper_params = hyper_params,
                 .context = context,
-                .vs = .init(context.allocator),
+                .vs = try .init(context.allocator),
             };
         }
 
@@ -231,7 +231,7 @@ pub fn MomentumSGD(comptime T: type) type {
             while (iter.next()) |e| {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
-            self.vs.deinit();
+            self.vs.deinit(self.context.allocator);
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -241,7 +241,7 @@ pub fn MomentumSGD(comptime T: type) type {
 
                 try zeros.fill(0.0, self.context.stream);
 
-                try self.vs.put(param, zeros.move());
+                try self.vs.put(self.context.allocator, param, zeros.move());
             }
 
             var v = self.vs.getPtr(param).?;
@@ -261,7 +261,7 @@ pub fn MomentumSGD(comptime T: type) type {
 pub fn AdaGrad(comptime T: type) type {
     return struct {
         hyper_params: HyperParams,
-        hs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
+        hs: std.AutoArrayHashMapUnmanaged(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
 
@@ -280,7 +280,7 @@ pub fn AdaGrad(comptime T: type) type {
             return .{
                 .hyper_params = hyper_params,
                 .context = context,
-                .hs = .init(context.allocator),
+                .hs = try .init(context.allocator, &.{}, &.{}),
             };
         }
 
@@ -289,7 +289,7 @@ pub fn AdaGrad(comptime T: type) type {
             while (iter.next()) |e| {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
-            self.hs.deinit();
+            self.hs.deinit(self.context.allocator);
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -299,7 +299,7 @@ pub fn AdaGrad(comptime T: type) type {
 
                 try zeros.fill(0.0, self.context.stream);
 
-                try self.hs.put(param, zeros.move());
+                try self.hs.put(self.context.allocator, param, zeros.move());
             }
 
             var h = self.hs.getPtr(param).?;
@@ -329,8 +329,8 @@ pub fn AdaGrad(comptime T: type) type {
 pub fn AdaDelta(comptime T: type) type {
     return struct {
         hyper_params: HyperParams,
-        msg: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
-        msdx: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
+        msg: std.AutoArrayHashMapUnmanaged(*TaggedVar, GPUTensor(T)),
+        msdx: std.AutoArrayHashMapUnmanaged(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
         pub usingnamespace Optimizer(Self);
@@ -348,8 +348,8 @@ pub fn AdaDelta(comptime T: type) type {
             return .{
                 .hyper_params = hyper_params,
                 .context = context,
-                .msg = .init(context.allocator),
-                .msdx = .init(context.allocator),
+                .msg = try .init(context.allocator, &.{}, &.{}),
+                .msdx = try .init(context.allocator, &.{}, &.{}),
             };
         }
 
@@ -358,13 +358,13 @@ pub fn AdaDelta(comptime T: type) type {
             while (msg_iter.next()) |e| {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
-            self.msg.deinit();
+            self.msg.deinit(self.context.allocator);
 
             var msdx_iter = self.msdx.iterator();
             while (msdx_iter.next()) |e| {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
-            self.msdx.deinit();
+            self.msdx.deinit(self.context.allocator);
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -372,12 +372,12 @@ pub fn AdaDelta(comptime T: type) type {
                 var zeros_msg = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_msg.deinitAsync(self.context.stream);
                 try zeros_msg.fill(0.0, self.context.stream);
-                try self.msg.put(param, zeros_msg.move());
+                try self.msg.put(self.context.allocator, param, zeros_msg.move());
 
                 var zeros_msdx = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_msdx.deinitAsync(self.context.stream);
                 try zeros_msdx.fill(0.0, self.context.stream);
-                try self.msdx.put(param, zeros_msdx.move());
+                try self.msdx.put(self.context.allocator, param, zeros_msdx.move());
             }
 
             var msg = self.msg.getPtr(param).?;
@@ -430,8 +430,8 @@ pub fn Adam(comptime T: type) type {
     return struct {
         t: usize,
         hyper_params: HyperParams,
-        ms: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
-        vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
+        ms: std.AutoArrayHashMapUnmanaged(*TaggedVar, GPUTensor(T)),
+        vs: std.AutoArrayHashMapUnmanaged(*TaggedVar, GPUTensor(T)),
 
         context: *Context,
 
@@ -453,8 +453,8 @@ pub fn Adam(comptime T: type) type {
                 .t = 0,
                 .hyper_params = hyper_params,
                 .context = context,
-                .ms = .init(context.allocator),
-                .vs = .init(context.allocator),
+                .ms = try .init(context.allocator, &.{}, &.{}),
+                .vs = try .init(context.allocator, &.{}, &.{}),
             };
         }
 
@@ -463,13 +463,13 @@ pub fn Adam(comptime T: type) type {
             while (ms_iter.next()) |e| {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
-            self.ms.deinit();
+            self.ms.deinit(self.context.allocator);
 
             var vs_iter = self.vs.iterator();
             while (vs_iter.next()) |e| {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
-            self.vs.deinit();
+            self.vs.deinit(self.context.allocator);
         }
 
         pub fn preupdate(self: *Self) void {
@@ -487,12 +487,12 @@ pub fn Adam(comptime T: type) type {
                 var zeros_m: GPUTensor(T) = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_m.deinitAsync(self.context.stream);
                 try zeros_m.fill(0.0, self.context.stream);
-                try self.ms.put(param, zeros_m.move());
+                try self.ms.put(self.context.allocator, param, zeros_m.move());
 
                 var zeros_v: GPUTensor(T) = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_v.deinitAsync(self.context.stream);
                 try zeros_v.fill(0.0, self.context.stream);
-                try self.vs.put(param, zeros_v.move());
+                try self.vs.put(self.context.allocator, param, zeros_v.move());
             }
 
             // Retrieve moment tensors and gradient
@@ -553,7 +553,6 @@ pub fn AdamW(comptime T: type) type {
     return struct {
         adam: Adam(T),
         hyper_params: HyperParams,
-        context: *Context,
 
         pub const HyperParams = struct {
             alpha: T = 0.001,
@@ -580,7 +579,6 @@ pub fn AdamW(comptime T: type) type {
                     context,
                 ),
                 .hyper_params = hyper_params,
-                .context = context,
             };
         }
 
@@ -589,14 +587,14 @@ pub fn AdamW(comptime T: type) type {
         }
 
         pub fn preupdate(self: *Self) void {
-            self.adam.t += 1;
+            self.adam.preupdate();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
             // Apply weight decay to param.data
             if (self.hyper_params.weight_decay != 0.0) {
                 const decay_factor = 1.0 - self.hyper_params.alpha * self.hyper_params.weight_decay;
-                try param.asUntagged(T).data.scale(decay_factor, self.context.stream);
+                try param.asUntagged(T).data.scale(decay_factor, self.adam.context.stream);
             }
 
             try self.adam.updateOne(param);
