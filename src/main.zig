@@ -531,10 +531,12 @@ fn example5() !void {
     var model: tomorin.layer.MLP(F, 2) = try .init(&.{ 10, 1 }, &context, base_chain);
     defer model.destroy();
 
-    // var optimizer = tomorin.optimizer.MomentumSGD(F).init(0.01, 0.9, &context);
-    //var optimizer = tomorin.optimizer.AdaGrad(F).init(0.001, 1e-8, &context);
-    // optimizer = tomorin.optimizer.AdaDelta(F).init(0.95, 1e-6, &context);
-    var optimizer = tomorin.optimizer.Adam(F).init(0.001, 0.9, 0.999, 1e-8, &context);
+    //var optimizer = try tomorin.optimizer.MomentumSGD(F).init(0.01, 0.9, &context, .{});
+    // var optimizer = try tomorin.optimizer.AdaGrad(F).init(0.001, 1e-8, &context, .{});
+    //var optimizer = try tomorin.optimizer.AdaDelta(F).init(0.95, 1e-4, &context, .{});
+    var optimizer = try tomorin.optimizer.Adam(F).init(0.001, 0.9, 0.999, 1e-8, &context, .{
+        .max_norm = 1.0,
+    });
     defer optimizer.deinit();
 
     const iter_chain = try context.createChain();
@@ -555,6 +557,7 @@ fn example5() !void {
         try optimizer.update(&model.getParams());
 
         if (i % 1000 == 0) {
+            try stream.sync();
             var pi_2v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, 1 }, &stream);
             errdefer pi_2v.deinitAsync(&stream);
             try pi_2v.fill(std.math.pi / 2.0, &stream);

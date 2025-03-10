@@ -5,11 +5,167 @@ const Context = @import("context.zig").Context;
 const Chain = @import("chain.zig").Chain;
 const GPUTensor = tomo.tensor.GPUTensor;
 
+pub fn WeightDecay(comptime T: type) type {
+    return struct {
+        rate: T,
+        context: *Context,
+
+        const Self = @This();
+
+        pub fn init(rate: T, context: *Context) Self {
+            return .{ .rate = rate, .context = context };
+        }
+
+        pub fn call(self: *const Self, params: []const ?*TaggedVar) !void {
+            for (params) |param| {
+                if (param) |p| {
+                    var data = try p.asUntagged(T).data.cloneAsync(self.context.stream);
+                    defer data.deinitAsync(self.context.stream);
+
+                    try data.scale(self.rate, self.context.stream);
+
+                    try p.refGrad().?.asUntagged(T).data.add(&data, self.context.stream);
+                }
+            }
+        }
+    };
+}
+
+pub fn ClipGrad(comptime T: type) type {
+    return struct {
+        max_norm: T,
+        context: *Context,
+
+        const Self = @This();
+
+        pub fn init(max_norm: T, context: *Context) Self {
+            return .{
+                .max_norm = max_norm,
+                .context = context,
+            };
+        }
+
+        pub fn call(self: *const Self, params: []const ?*TaggedVar) !void {
+            var total_norm_device: GPUTensor(T) = try .initAsync(&.{ 1, 1 }, self.context.stream);
+            defer total_norm_device.deinitAsync(self.context.stream);
+            try total_norm_device.fill(0.0, self.context.stream);
+
+            for (params) |param| {
+                if (param) |p| {
+                    var grad_sq = try p.refGrad().?.asUntagged(T).data.cloneAsync(self.context.stream);
+                    defer grad_sq.deinitAsync(self.context.stream);
+
+                    try grad_sq.square(self.context.stream);
+
+                    var sum = try grad_sq.sum(p.getContext().allocator, &.{}, true, self.context.stream);
+                    defer sum.deinitAsync(self.context.stream);
+
+                    var sum_1_1 = try sum.reshape(&.{ 1, 1 }, self.context.stream);
+                    defer sum_1_1.deinitAsync(self.context.stream);
+
+                    try total_norm_device.add(&sum_1_1, self.context.stream);
+                }
+            }
+
+            var total_norm_host = try total_norm_device.toHost(self.context.allocator, self.context.stream);
+            defer total_norm_host.deinit(self.context.allocator);
+
+            try self.context.stream.sync();
+
+            const total_norm = @sqrt(total_norm_host.at(&.{ 0, 0 }).*);
+            const rate = self.max_norm / (total_norm + 1e-6);
+
+            if (rate >= 1) return;
+
+            for (params) |param| {
+                if (param) |p| {
+                    try p.refGrad().?.asUntagged(T).data.scale(rate, self.context.stream);
+                }
+            }
+        }
+    };
+}
+
+pub const FreezeParam = struct {
+    freeze_params: []?*TaggedVar,
+    context: *Context,
+
+    pub fn init(params_slice: []const []?*TaggedVar, context: *Context) !FreezeParam {
+        var params: std.ArrayList(?*TaggedVar) = .init(context.allocator);
+        defer params.deinit();
+
+        for (params_slice) |p_slice| {
+            try params.appendSlice(p_slice);
+        }
+
+        return .{
+            .freeze_params = try params.toOwnedSlice(),
+            .context = context,
+        };
+    }
+
+    pub fn deinit(self: *FreezeParam) void {
+        self.context.allocator.free(self.freeze_params);
+    }
+
+    pub fn call(self: *FreezeParam) !void {
+        for (self.freeze_params) |freeze_param| {
+            if (freeze_param) |p| {
+                p.setGrad(null);
+            }
+        }
+    }
+};
+
+pub fn HookOption(comptime T: type) type {
+    return struct {
+        weight_decay_rate: ?T = null,
+        max_norm: ?T = null,
+        freeze_params: ?[]const []?*TaggedVar = null,
+    };
+}
+
+pub fn OptimizerBase(comptime T: type) type {
+    return struct {
+        weight_decay: ?WeightDecay(T),
+        clip_grad: ?ClipGrad(T),
+        freeze_param: ?FreezeParam,
+
+        const Self = @This();
+
+        pub fn init(option: HookOption(T), context: *Context) !Self {
+            const weight_decay = if (option.weight_decay_rate) |r| WeightDecay(T).init(r, context) else null;
+            const clip_grad = if (option.max_norm) |m| ClipGrad(T).init(m, context) else null;
+            const freeze_param = if (option.freeze_params) |ps| try FreezeParam.init(ps, context) else null;
+
+            return .{
+                .weight_decay = weight_decay,
+                .clip_grad = clip_grad,
+                .freeze_param = freeze_param,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.freeze_param) |*fp| {
+                fp.deinit();
+            }
+        }
+    };
+}
+
 pub fn Optimizer(comptime Self: type) type {
     return struct {
         pub fn update(self: *Self, params: []const ?*TaggedVar) !void {
-            if (@hasDecl(Self, "hooks")) {
-                try self.hooks(params);
+            if (self.base.weight_decay) |wd| {
+                try wd.call(params);
+            }
+
+            if (self.base.clip_grad) |cg| {
+                try cg.call(params);
+            }
+
+            if (self.base.freeze_param) |*fp| {
+                try fp.call();
             }
 
             if (@hasDecl(Self, "preupdate")) {
@@ -28,14 +184,23 @@ pub fn Optimizer(comptime Self: type) type {
 pub fn SGD(comptime T: type) type {
     return struct {
         lr: T,
-        context: *Context,
 
+        context: *Context,
+        base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
         const Self = @This();
 
-        pub fn init(lr: T, context: *Context) Self {
-            return .{ .lr = lr, .context = context };
+        pub fn init(lr: T, context: *Context, option: HookOption(T)) !Self {
+            return .{
+                .lr = lr,
+                .context = context,
+                .base = try .init(option, context),
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
@@ -53,18 +218,20 @@ pub fn MomentumSGD(comptime T: type) type {
         lr: T = 0.01,
         momentum: T = 0.9,
         vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
-        context: *Context,
 
+        context: *Context,
+        base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
         const Self = @This();
 
-        pub fn init(lr: T, momentum: T, context: *Context) Self {
+        pub fn init(lr: T, momentum: T, context: *Context, option: HookOption(T)) !Self {
             return .{
                 .lr = lr,
                 .momentum = momentum,
                 .context = context,
                 .vs = .init(context.allocator),
+                .base = try .init(option, context),
             };
         }
 
@@ -74,12 +241,15 @@ pub fn MomentumSGD(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.vs.deinit();
+            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
             if (!self.vs.contains(param)) {
                 var zeros: GPUTensor(T) = try .initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros.deinitAsync(self.context.stream);
+
+                try zeros.fill(0.0, self.context.stream);
 
                 try self.vs.put(param, zeros.move());
             }
@@ -103,18 +273,21 @@ pub fn AdaGrad(comptime T: type) type {
         lr: T = 0.001,
         eps: T = 1e-8,
         hs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
+
+        base: OptimizerBase(T),
         context: *Context,
 
         pub usingnamespace Optimizer(Self);
 
         const Self = @This();
 
-        pub fn init(lr: T, eps: T, context: *Context) Self {
+        pub fn init(lr: T, eps: T, context: *Context, option: HookOption(T)) !Self {
             return .{
                 .lr = lr,
                 .eps = eps,
                 .context = context,
                 .hs = .init(context.allocator),
+                .base = try .init(option, context),
             };
         }
 
@@ -124,12 +297,15 @@ pub fn AdaGrad(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.hs.deinit();
+            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
             if (!self.hs.contains(param)) {
                 var zeros: GPUTensor(T) = try .initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros.deinitAsync(self.context.stream);
+
+                try zeros.fill(0.0, self.context.stream);
 
                 try self.hs.put(param, zeros.move());
             }
@@ -164,19 +340,21 @@ pub fn AdaDelta(comptime T: type) type {
         eps: T = 1e-6,
         msg: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
         msdx: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
-        context: *Context,
 
+        context: *Context,
+        base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
         const Self = @This();
 
-        pub fn init(rho: T, eps: T, context: *Context) Self {
+        pub fn init(rho: T, eps: T, context: *Context, option: HookOption(T)) !Self {
             return .{
                 .rho = rho,
                 .eps = eps,
                 .context = context,
                 .msg = .init(context.allocator),
                 .msdx = .init(context.allocator),
+                .base = try .init(option, context),
             };
         }
 
@@ -192,16 +370,19 @@ pub fn AdaDelta(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.msdx.deinit();
+            self.base.deinit();
         }
 
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
             if (!self.msg.contains(param)) {
                 var zeros_msg = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_msg.deinitAsync(self.context.stream);
+                try zeros_msg.fill(0.0, self.context.stream);
                 try self.msg.put(param, zeros_msg.move());
 
                 var zeros_msdx = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_msdx.deinitAsync(self.context.stream);
+                try zeros_msdx.fill(0.0, self.context.stream);
                 try self.msdx.put(param, zeros_msdx.move());
             }
 
@@ -260,13 +441,14 @@ pub fn Adam(comptime T: type) type {
         eps: T = 1e-8,
         ms: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
         vs: std.AutoArrayHashMap(*TaggedVar, GPUTensor(T)),
-        context: *Context,
 
+        context: *Context,
+        base: OptimizerBase(T),
         pub usingnamespace Optimizer(Self);
 
         const Self = @This();
 
-        pub fn init(alpha: T, beta1: T, beta2: T, eps: T, context: *Context) Self {
+        pub fn init(alpha: T, beta1: T, beta2: T, eps: T, context: *Context, option: HookOption(T)) !Self {
             return .{
                 .t = 0,
                 .alpha = alpha,
@@ -276,6 +458,7 @@ pub fn Adam(comptime T: type) type {
                 .context = context,
                 .ms = .init(context.allocator),
                 .vs = .init(context.allocator),
+                .base = try .init(option, context),
             };
         }
 
@@ -291,6 +474,7 @@ pub fn Adam(comptime T: type) type {
                 e.value_ptr.deinitAsync(self.context.stream);
             }
             self.vs.deinit();
+            self.base.deinit();
         }
 
         pub fn preupdate(self: *Self) void {
@@ -307,10 +491,12 @@ pub fn Adam(comptime T: type) type {
             if (!self.ms.contains(param)) {
                 var zeros_m: GPUTensor(T) = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_m.deinitAsync(self.context.stream);
+                try zeros_m.fill(0.0, self.context.stream);
                 try self.ms.put(param, zeros_m.move());
 
                 var zeros_v: GPUTensor(T) = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
                 errdefer zeros_v.deinitAsync(self.context.stream);
+                try zeros_v.fill(0.0, self.context.stream);
                 try self.vs.put(param, zeros_v.move());
             }
 
@@ -324,7 +510,7 @@ pub fn Adam(comptime T: type) type {
             try m.scale(self.beta1, self.context.stream);
             var temp_m = try grad.cloneAsync(self.context.stream);
             defer temp_m.deinitAsync(self.context.stream);
-            try temp_m.scale(1 - self.beta1, self.context.stream);
+            try temp_m.scale(1.0 - self.beta1, self.context.stream);
             try m.add(&temp_m, self.context.stream);
 
             // Update second moment: v = beta2 * v + (1 - beta2) * (grad * grad)
@@ -332,7 +518,7 @@ pub fn Adam(comptime T: type) type {
             var grad_sq = try grad.cloneAsync(self.context.stream);
             defer grad_sq.deinitAsync(self.context.stream);
             try grad_sq.product(&grad, self.context.stream); // Element-wise grad * grad
-            try grad_sq.scale(1 - self.beta2, self.context.stream);
+            try grad_sq.scale(1.0 - self.beta2, self.context.stream);
             try v.add(&grad_sq, self.context.stream);
 
             // Compute bias correction factors
