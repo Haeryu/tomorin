@@ -22,6 +22,7 @@ const matmul = tomorin.function.matmul;
 const meanSquaredError = tomorin.function.meanSquaredError;
 const meanSquaredErrorEx = tomorin.function.meanSquaredErrorEx;
 const sigmoid = tomorin.function.sigmoid;
+const sigmoidEx = tomorin.function.sigmoidEx;
 const linear = tomorin.function.linear;
 const TaggedVar = tomorin.variable.TaggedVar;
 
@@ -489,6 +490,102 @@ fn example4() !void {
     }
 }
 
+fn example5() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream: tomo.stream.Stream = try .create();
+    defer stream.destroy();
+
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
+    defer cuda_context.deinit();
+
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+
+    var xv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 100, 1 }, &stream);
+    defer xv.deinitAsync(&stream);
+    try xv.fillUniformRange(0.0, std.math.pi, &cuda_context, &stream);
+
+    var noisev: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 100, 1 }, &stream);
+    defer noisev.deinitAsync(&stream);
+    try noisev.fillUniformRange(-0.001, 0.001, &cuda_context, &stream);
+
+    var yv = try xv.cloneAsync(&stream);
+    defer yv.deinitAsync(&stream);
+    try yv.sin(&stream);
+
+    try yv.add(&noisev, &stream);
+
+    const x = try base_chain.createVariable(F, xv.move(), "x");
+    const y = try base_chain.createVariable(F, yv.move(), "y");
+
+    var model: tomorin.layer.MLP(F, 2, sigmoidEx) = try .init(&.{ 10, 1 }, &context, base_chain);
+    defer model.destroy();
+
+    const iter_chain = try context.createChain();
+    context.current_chain = iter_chain;
+
+    const lr = 0.1;
+    const iters = 10000;
+    for (0..iters + 1) |i| {
+        const y_pred = try model.forward(x, iter_chain);
+
+        const loss = try meanSquaredErrorEx(F, y, y_pred, iter_chain);
+
+        model.clearGrads();
+        y.setGrad(null);
+        x.setGrad(null);
+
+        try loss.backward();
+
+        for (&model.getParams()) |param| {
+            if (param) |p| {
+                var gp = p.detatchGrad();
+                //  defer gp.destroy();
+
+                try gp.asUntagged(F).data.scale(lr, &stream);
+                try p.asUntagged(F).data.sub(&gp.asUntagged(F).data, &stream);
+            }
+        }
+
+        if (i % 1000 == 0) {
+            var pi_2v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, 1 }, &stream);
+            errdefer pi_2v.deinitAsync(&stream);
+            try pi_2v.fill(std.math.pi / 2.0, &stream);
+
+            const pi_2 = try iter_chain.createVariable(F, pi_2v.move(), "pi/2");
+
+            const pi_2_y = try model.forward(pi_2, iter_chain);
+            try stream.sync();
+
+            var loss_host = try loss.asUntagged(F).data.toHost(allocator, &stream);
+            defer loss_host.deinit(allocator);
+
+            var pi_2_y_host = try pi_2_y.asUntagged(F).data.toHost(allocator, &stream);
+            defer pi_2_y_host.deinit(allocator);
+            try stream.sync();
+
+            std.debug.print("loss: {d}", .{loss_host});
+            std.debug.print("pi_2: {d}\n", .{pi_2_y_host});
+        }
+
+        try stream.sync();
+        iter_chain.clear();
+
+        // try stream.sync();
+
+    }
+}
+
 pub fn main() !void {
-    try example4();
+    try example5();
 }

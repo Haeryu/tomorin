@@ -96,8 +96,12 @@ pub fn LayerDecorator(comptime Self: type) type {
             }
 
             inline for (fields_info.fields) |field| {
-                if (@field(self.fields, field.name)) |f| {
-                    f.destroy();
+                if (field.type == ?*TaggedVar) {
+                    if (@field(self.fields, field.name)) |f| {
+                        f.destroy();
+                    }
+                } else {
+                    @field(self.fields, field.name).destroy();
                 }
             }
         }
@@ -113,9 +117,16 @@ pub fn LayerDecorator(comptime Self: type) type {
     };
 }
 
+// TODO plplot? raylib??
+// pub fn Model1in(comptime Self: type) type {
+//     return struct {
+//         pub fn plot(self: *Self, x: *TaggedVar, file_name: []const u8) !void {}
+//     };
+// }
+
 pub fn Linear(comptime T: type) type {
     return struct {
-        pub usingnamespace LayerDecorator(Linear(T));
+        pub usingnamespace LayerDecorator(Self);
         fields: LayerFieldsFactory(
             &.{
                 "w",
@@ -136,7 +147,7 @@ pub fn Linear(comptime T: type) type {
             no_bias: bool,
             context: *Context,
             chain: *Chain,
-        ) !Linear(T) {
+        ) !Self {
             const b = if (no_bias) null else blk: {
                 var b_tensor: GPUTensor(T) = try .initAsync(&.{ 1, out_size }, context.stream);
                 errdefer b_tensor.deinitAsync(context.stream);
@@ -194,6 +205,67 @@ pub fn Linear(comptime T: type) type {
                 self.fields.w.?,
                 chain,
             );
+        }
+    };
+}
+
+pub fn MLP(
+    comptime T: type,
+    comptime layers_count: comptime_int,
+    comptime activation: fn (comptime T: type, x: *TaggedVar, chain: *Chain) anyerror!*TaggedVar,
+) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{},
+            &makeFields(),
+        ),
+
+        const Self = @This();
+
+        fn makeFields() [layers_count]std.meta.Tuple(&.{ [:0]const u8, type }) {
+            var fields: [layers_count]std.meta.Tuple(&.{ [:0]const u8, type }) = undefined;
+            for (&fields, 0..) |*field, i| {
+                field.* = .{ std.fmt.comptimePrint("l{}", .{i}), Linear(T) };
+            }
+            return fields;
+        }
+
+        pub fn init(
+            out_sizes: *const [layers_count]usize,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            var self: Self = undefined;
+            inline for (0..layers_count) |i| {
+                errdefer {
+                    inline for (0..i) |j| {
+                        @field(self.fields, std.fmt.comptimePrint("l{}", .{j})).destroy();
+                    }
+                }
+                @field(self.fields, std.fmt.comptimePrint("l{}", .{i})) = try .init(
+                    null,
+                    out_sizes[i],
+                    false,
+                    context,
+                    chain,
+                );
+            }
+
+            return self;
+        }
+
+        pub fn forward(
+            self: *Self,
+            x: *TaggedVar,
+            chain: *Chain,
+        ) !*TaggedVar {
+            var y: *TaggedVar = x;
+            inline for (0..layers_count - 1) |i| {
+                y = try @field(self.fields, std.fmt.comptimePrint("l{}", .{i})).forward(y, chain);
+                y = try activation(T, y, chain);
+            }
+            return try @field(self.fields, std.fmt.comptimePrint("l{}", .{layers_count - 1})).forward(y, chain);
         }
     };
 }
