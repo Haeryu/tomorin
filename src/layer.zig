@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const TaggedVar = @import("variable.zig").TaggedVar;
 const tomo = @import("tomo");
 const Context = @import("context.zig").Context;
@@ -212,6 +211,7 @@ pub fn Linear(comptime T: type) type {
 pub fn MLP(
     comptime T: type,
     comptime layers_count: comptime_int,
+    // putting activation fn here makes compile error. lol
 ) type {
     return struct {
         pub usingnamespace LayerDecorator(Self);
@@ -270,77 +270,77 @@ pub fn MLP(
     };
 }
 
-pub fn MLP2(
-    comptime T: type,
-    comptime layers_count: comptime_int,
-    comptime activation: fn (comptime T: type, x: *TaggedVar, chain: *Chain) anyerror!*TaggedVar,
-) type {
-    return struct {
-        layers: [layers_count]Linear(T),
+// pub fn MLP2(
+//     comptime T: type,
+//     comptime layers_count: comptime_int,
+//     comptime activation: fn (comptime T: type, x: *TaggedVar, chain: *Chain) anyerror!*TaggedVar,
+// ) type {
+//     return struct {
+//         layers: [layers_count]Linear(T),
 
-        const Self = @This();
+//         const Self = @This();
 
-        pub fn init(
-            out_sizes: *const [layers_count]usize,
-            context: *Context,
-            chain: *Chain,
-        ) !Self {
-            var layers: [layers_count]Linear(T) = undefined;
-            for (0..layers_count) |i| {
-                errdefer {
-                    for (0..i) |j| {
-                        layers[j].destroy();
-                    }
-                }
-                layers[i] = try .init(
-                    null,
-                    out_sizes[i],
-                    false,
-                    context,
-                    chain,
-                );
-            }
+//         pub fn init(
+//             out_sizes: *const [layers_count]usize,
+//             context: *Context,
+//             chain: *Chain,
+//         ) !Self {
+//             var layers: [layers_count]Linear(T) = undefined;
+//             for (0..layers_count) |i| {
+//                 errdefer {
+//                     for (0..i) |j| {
+//                         layers[j].destroy();
+//                     }
+//                 }
+//                 layers[i] = try .init(
+//                     null,
+//                     out_sizes[i],
+//                     false,
+//                     context,
+//                     chain,
+//                 );
+//             }
 
-            return .{ .layers = layers };
-        }
+//             return .{ .layers = layers };
+//         }
 
-        pub fn forward(
-            self: *Self,
-            x: *TaggedVar,
-            chain: *Chain,
-        ) !*TaggedVar {
-            var y: *TaggedVar = x;
-            for (self.layers[0 .. self.layers.len - 1]) |*layer| {
-                y = try layer.forward(y, chain);
-                y = try activation(T, y, chain);
-            }
-            return try self.layers[self.layers.len - 1].forward(y, chain);
-        }
+//         pub fn forward(
+//             self: *Self,
+//             x: *TaggedVar,
+//             chain: *Chain,
+//         ) !*TaggedVar {
+//             var y: *TaggedVar = x;
+//             for (self.layers[0 .. self.layers.len - 1]) |*layer| {
+//                 y = try layer.forward(y, chain);
+//                 y = try activation(T, y, chain);
+//             }
+//             return try self.layers[self.layers.len - 1].forward(y, chain);
+//         }
 
-        pub fn destroy(self: *Self) void {
-            for (self.layers) |*layer| {
-                layer.destroy();
-            }
-        }
+//         pub fn destroy(self: *Self) void {
+//             for (self.layers) |*layer| {
+//                 layer.destroy();
+//             }
+//         }
 
-        pub fn getParams(self: *Self) [2 * layers_count]?*TaggedVar {
-            var params: [2 * layers_count]?*TaggedVar = undefined;
+//         pub fn getParams(self: *Self) [2 * layers_count]?*TaggedVar {
+//             var params: [2 * layers_count]?*TaggedVar = undefined;
 
-            for (self.layers, 0..) |*layer, i| {
-                params[2 * i] = layer.fields.w;
-                params[2 * i + 1] = layer.fields.b;
-            }
+//             for (self.layers, 0..) |*layer, i| {
+//                 params[2 * i] = layer.fields.w;
+//                 params[2 * i + 1] = layer.fields.b;
+//             }
 
-            return params;
-        }
+//             return params;
+//         }
 
-        pub fn clearGrads(self: *Self) void {
-            const params = self.getParams();
-            for (&params) |param| {
-                if (param) |p| {
-                    p.setGrad(null);
-                }
-            }
-        }
-    };
-}
+//         pub fn clearGrads(self: *Self) void {
+//             const params = self.getParams();
+//             for (&params) |param| {
+//                 if (param) |p| {
+//                     p.setGrad(null);
+//                 }
+//             }
+//         }
+//     };
+// }

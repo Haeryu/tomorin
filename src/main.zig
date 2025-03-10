@@ -531,10 +531,15 @@ fn example5() !void {
     var model: tomorin.layer.MLP(F, 2) = try .init(&.{ 10, 1 }, &context, base_chain);
     defer model.destroy();
 
+    // var optimizer = tomorin.optimizer.MomentumSGD(F).init(0.01, 0.9, &context);
+    //var optimizer = tomorin.optimizer.AdaGrad(F).init(0.001, 1e-8, &context);
+    // optimizer = tomorin.optimizer.AdaDelta(F).init(0.95, 1e-6, &context);
+    var optimizer = tomorin.optimizer.Adam(F).init(0.001, 0.9, 0.999, 1e-8, &context);
+    defer optimizer.deinit();
+
     const iter_chain = try context.createChain();
     context.current_chain = iter_chain;
 
-    const lr = 0.1;
     const iters = 10000;
     for (0..iters + 1) |i| {
         const y_pred = try model.forward(x, iter_chain, sigmoidEx);
@@ -547,15 +552,7 @@ fn example5() !void {
 
         try loss.backward();
 
-        for (&model.getParams()) |param| {
-            if (param) |p| {
-                var gp = p.detatchGrad();
-                //  defer gp.destroy();
-
-                try gp.asUntagged(F).data.scale(lr, &stream);
-                try p.asUntagged(F).data.sub(&gp.asUntagged(F).data, &stream);
-            }
-        }
+        try optimizer.update(&model.getParams());
 
         if (i % 1000 == 0) {
             var pi_2v: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 1, 1 }, &stream);
