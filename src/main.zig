@@ -536,7 +536,8 @@ fn example5() !void {
     // var optimizer :tomorin.optimizer.MomentumSGD(F)= try .init(.default, &context);
     // var optimizer:tomorin.optimizer.AdaGrad(F) = try .init(.default,  &context);
     // var optimizer:tomorin.optimizer.AdaDelta(F) = try .init(.default,  &context);
-    var optimizer: tomorin.optimizer.Adam(F) = try .init(.default, &context);
+    // optimizer: tomorin.optimizer.Adam(F) = try .init(.default, &context);
+    var optimizer: tomorin.optimizer.AdamW(F) = try .init(.default, &context);
     defer optimizer.deinit();
 
     const iter_chain = try context.createChain();

@@ -548,3 +548,58 @@ pub fn Adam(comptime T: type) type {
         }
     };
 }
+
+pub fn AdamW(comptime T: type) type {
+    return struct {
+        adam: Adam(T),
+        hyper_params: HyperParams,
+        context: *Context,
+
+        pub const HyperParams = struct {
+            alpha: T = 0.001,
+            beta1: T = 0.9,
+            beta2: T = 0.999,
+            eps: T = 1e-8,
+            weight_decay: T = 0.0,
+            pub const default: HyperParams = .{};
+        };
+
+        pub usingnamespace Optimizer(Self);
+
+        const Self = @This();
+
+        pub fn init(hyper_params: HyperParams, context: *Context) !Self {
+            return .{
+                .adam = try .init(
+                    .{
+                        .alpha = hyper_params.alpha,
+                        .beta1 = hyper_params.beta1,
+                        .beta2 = hyper_params.beta2,
+                        .eps = hyper_params.eps,
+                    },
+                    context,
+                ),
+                .hyper_params = hyper_params,
+                .context = context,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.adam.deinit();
+        }
+
+        pub fn preupdate(self: *Self) void {
+            self.adam.t += 1;
+        }
+
+        pub fn updateOne(self: *Self, param: *TaggedVar) !void {
+            // Apply weight decay to param.data
+            if (self.hyper_params.weight_decay != 0.0) {
+                const decay_factor = 1.0 - self.hyper_params.alpha * self.hyper_params.weight_decay;
+                try param.asUntagged(T).data.scale(decay_factor, self.context.stream);
+            }
+
+            try self.adam.updateOne(param);
+        }
+    };
+}
