@@ -528,7 +528,7 @@ fn example5() !void {
     const x = try base_chain.createVariable(F, xv.move(), "x");
     const y = try base_chain.createVariable(F, yv.move(), "y");
 
-    var model: tomorin.layer.MLP(F, 2, sigmoidEx) = try .init(&.{ 10, 1 }, &context, base_chain);
+    var model: tomorin.layer.MLP2(F, 2, sigmoidEx) = try .init(&.{ 10, 1 }, &context, base_chain);
     defer model.destroy();
 
     const iter_chain = try context.createChain();
