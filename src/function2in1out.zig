@@ -18,11 +18,12 @@ const Chain = @import("chain.zig").Chain;
 const makefunc2in1outBase = @import("function.zig").makefunc2in1outBase;
 
 const negEx = @import("function1in1out.zig").negEx;
+const expEx = @import("function1in1out.zig").expEx;
 const powEx = @import("function1scalar1in1out.zig").powEx;
 const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
 const squareEx = @import("function1in1out.zig").squareEx;
 const transposeEx = @import("function1in1out.zig").transposeEx;
-const broadcastToEx = @import("function1shape1in1out.zig").broadcastToEx;
+const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {

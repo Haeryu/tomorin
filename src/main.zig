@@ -580,7 +580,7 @@ fn example5() !void {
             std.debug.print("pi_2: {d}\n", .{pi_2_y_host});
         }
 
-        try stream.sync();
+        // try stream.sync();
         iter_chain.clear();
 
         // try stream.sync();

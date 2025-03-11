@@ -22,7 +22,7 @@ const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
 const shiftEx = @import("function1scalar1in1out.zig").shiftEx;
 const mulEx = @import("function2in1out.zig").mulEx;
 const divEx = @import("function2in1out.zig").divEx;
-const broadcastToEx = @import("function1shape1in1out.zig").broadcastToEx;
+const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
 
 // TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
 
@@ -390,7 +390,7 @@ pub fn FuncDecoratorSum(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
 
-        pub fn create(context: *Context, axis: []const isize, chain: *Chain) !*Function {
+        pub fn create(context: *Context, axis: ?[]const isize, chain: *Chain) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
@@ -465,7 +465,7 @@ pub fn Sum(comptime T: type) type {
         in: ?*TaggedVar,
         out: ?*TaggedVar,
         x_shape: []const usize = &.{},
-        axis: []const isize,
+        axis: ?[]const isize,
         base: FunctionBase,
 
         pub const In = T;

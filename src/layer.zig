@@ -136,7 +136,7 @@ pub fn Linear(comptime T: type) type {
         in_size: ?usize,
         out_size: usize,
         context: *Context,
-        chain: *Chain,
+        base_chain: *Chain,
 
         const Self = @This();
 
@@ -145,13 +145,13 @@ pub fn Linear(comptime T: type) type {
             out_size: usize,
             no_bias: bool,
             context: *Context,
-            chain: *Chain,
+            base_chain: *Chain,
         ) !Self {
             const b = if (no_bias) null else blk: {
                 var b_tensor: GPUTensor(T) = try .initAsync(&.{ 1, out_size }, context.stream);
                 errdefer b_tensor.deinitAsync(context.stream);
                 try b_tensor.fill(0.0, context.stream);
-                break :blk try chain.createVariable(T, b_tensor.move(), "b");
+                break :blk try base_chain.createVariable(T, b_tensor.move(), "b");
             };
 
             return .{
@@ -162,7 +162,7 @@ pub fn Linear(comptime T: type) type {
                 .in_size = in_size,
                 .out_size = out_size,
                 .context = context,
-                .chain = chain,
+                .base_chain = base_chain,
             };
         }
 
@@ -173,7 +173,7 @@ pub fn Linear(comptime T: type) type {
             errdefer w_tensor.deinitAsync(self.context.stream);
             try w_tensor.fillNormalDistribution(0.0, 1.0, self.context.cuda_context, self.context.stream);
             try w_tensor.scale(1.0 / @as(T, @floatFromInt(self.in_size.?)), self.context.stream);
-            const w = try self.chain.createVariable(T, w_tensor.move(), "w");
+            const w = try self.base_chain.createVariable(T, w_tensor.move(), "w");
             return w;
         }
 
@@ -211,7 +211,7 @@ pub fn Linear(comptime T: type) type {
 pub fn MLP(
     comptime T: type,
     comptime layers_count: comptime_int,
-    // putting activation fn here makes compile error. lol
+    // putting activation fn here makes compile error(with no error message...). lol
 ) type {
     return struct {
         pub usingnamespace LayerDecorator(Self);

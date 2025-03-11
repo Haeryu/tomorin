@@ -17,13 +17,24 @@ const FuncDecorator1in1outBase = @import("function.zig").FuncDecorator1in1outBas
 const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
-const sumToEx = @import("function1in1out.zig").sumToEx;
+const addEx = @import("function2in1out.zig").addEx;
+const expEx = @import("function1in1out.zig").expEx;
+const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
+const shiftEx = @import("function1scalar1in1out.zig").shiftEx;
+const mulEx = @import("function2in1out.zig").mulEx;
+const divEx = @import("function2in1out.zig").divEx;
+const subEx = @import("function2in1out.zig").subEx;
+const sumEx = @import("function1in1out.zig").sumEx;
+const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
+const logSoftmaxEx = @import("function1slice1in1out.zig").logSoftmaxEx;
 
-pub fn FuncDecorator1Shape1in1out(comptime Self: type) type {
+// TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
+
+pub fn FuncDecorator1tensor1slice1in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
 
-        pub fn create(context: *Context, shape: []const usize, chain: *Chain) !*Function {
+        pub fn create(context: *Context, t: *TaggedVar, slice: anytype, chain: *Chain) !*Function {
             const self = try context.allocator.create(Self);
             errdefer context.allocator.destroy(self);
 
@@ -45,7 +56,8 @@ pub fn FuncDecorator1Shape1in1out(comptime Self: type) type {
             self.* = .{
                 .in = null,
                 .out = null,
-                .shape = shape,
+                .t = t,
+                .slice = slice,
                 .base = .{
                     .func_ptr = func_ptr,
                     .context = context,
@@ -70,12 +82,18 @@ pub fn FuncDecorator1Shape1in1out(comptime Self: type) type {
             const out = if (!out_contains) try self.out.?.getDotAlloc() else "";
             defer if (!out_contains) allocator.free(out);
 
+            const t_contains = var_seen_set.contains(self.t);
+            const t = if (!t_contains) try self.t.getDotAlloc() else "";
+            defer if (!t_contains) allocator.free(t);
+
             try var_seen_set.put(self.out.?, {});
 
             return try std.fmt.allocPrint(allocator,
                 \\{} [label="{s}", color=lightblue, style=filled, shape=box]
                 \\{s}
                 \\{s}
+                \\{s}
+                \\{} -> {}
                 \\{} -> {}
                 \\{} -> {}
                 \\
@@ -84,7 +102,10 @@ pub fn FuncDecorator1Shape1in1out(comptime Self: type) type {
                 @typeName(Self)[std.mem.indexOf(u8, @typeName(Self), ".").? + 1 ..],
                 in,
                 out,
+                t,
                 @intFromPtr(self.in.?),
+                @intFromPtr(ctx),
+                @intFromPtr(self.t),
                 @intFromPtr(ctx),
                 @intFromPtr(ctx),
                 @intFromPtr(self.out.?),
@@ -93,88 +114,68 @@ pub fn FuncDecorator1Shape1in1out(comptime Self: type) type {
     };
 }
 
-fn makefunc(comptime F: type, x: *TaggedVar, shape: []const usize, chain: *Chain) !*TaggedVar {
-    const funckey = try F.create(x.getContext(), shape, chain);
+fn makefunc(comptime F: type, x: *TaggedVar, t: *TaggedVar, slice: anytype, chain: *Chain) !*TaggedVar {
+    const funckey = try F.create(x.getContext(), t, slice, chain);
 
     return try makefunc1in1outBase(funckey, x);
 }
 
-pub fn Reshape(comptime T: type) type {
+pub fn SoftmaxCrossEntropy(comptime T: type) type {
     return struct {
         in: ?*TaggedVar,
         out: ?*TaggedVar,
-        old_shape: []const usize = &.{},
-        shape: []const usize,
+        t: *TaggedVar,
+        slice: ?[]const isize,
         base: FunctionBase,
 
-        pub const In = T;
+        pub const In1 = T;
+        pub const In2 = T;
         pub const Out = T;
 
-        pub usingnamespace FuncDecorator1Shape1in1out(Self);
+        pub usingnamespace FuncDecorator1tensor1slice1in1out(Self);
 
-        const Self = Reshape(T);
+        const Self = SoftmaxCrossEntropy(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            self.old_shape = x.base.getShapeConst();
 
-            var y = try GPUTensor(T).initAsync(self.shape, context.stream);
-            errdefer y.deinitAsync(context.stream);
+            var logsm = try logSoftmaxEx(T, x, self.slice.?, self.base.chain);
+            defer logsm.destroy();
 
-            try y.writeAsync(x.ptr.?, x.calcLen(), 0, context.stream);
+            var prod = try mulEx(T, logsm, self.t, self.base.chain);
+            defer prod.destroy();
 
-            return y;
+            var loss = try sumEx(T, prod, self.slice, context.stream);
+            defer loss.destroy();
+
+            var scale = try scaleEx(T, loss, -1.0, context.stream);
+            defer scale.destroy();
+
+            return scale.asUntagged(T).data.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try reshapeEx(T, gy, self.old_shape, self.base.chain);
+            const batch_size = self.in.?.getShape()[0];
+
+            return try mulEx(
+                T,
+                try scaleEx(
+                    T,
+                    try subEx(T, self.out.?, self.t.?, self.base.chain),
+                    1.0 / @as(T, @floatFromInt(batch_size)),
+                    self.base.chain,
+                ),
+                gy,
+                self.base.chain,
+            );
         }
     };
 }
 
-pub fn reshape(comptime T: type, x: *TaggedVar, shape: []const usize) !*TaggedVar {
-    return try makefunc(Reshape(T), x, shape, x.getContext().current_chain.?);
+pub fn softmaxCrossEntropy(comptime T: type, logits: *TaggedVar, target: *TaggedVar, axis: []const isize) !*TaggedVar {
+    return try softmaxCrossEntropyEx(T, logits, target, axis, logits.getContext().current_chain.?);
 }
 
-pub fn reshapeEx(comptime T: type, x: *TaggedVar, shape: []const usize, chain: *Chain) !*TaggedVar {
-    return try makefunc(Reshape(T), x, shape, chain);
-}
-
-pub fn BroadCastTo(comptime T: type) type {
-    return struct {
-        in: ?*TaggedVar,
-        out: ?*TaggedVar,
-        x_shape: []const usize = &.{},
-        shape: []const usize,
-        base: FunctionBase,
-
-        pub const In = T;
-        pub const Out = T;
-
-        pub usingnamespace FuncDecorator1Shape1in1out(Self);
-
-        const Self = BroadCastTo(T);
-
-        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.context;
-            self.x_shape = x.base.getShapeConst();
-
-            var y = try x.broadcastTo(self.shape, context.stream);
-            errdefer y.deinitAsync(context.stream);
-
-            return y.move();
-        }
-
-        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try sumToEx(T, gy, self.x_shape, self.base.chain);
-        }
-    };
-}
-
-pub fn broadcastTo(comptime T: type, x: *TaggedVar, shape: []const usize) !*TaggedVar {
-    return try broadcastToEx(T, x, shape, x.getContext().current_chain.?);
-}
-
-pub fn broadcastToEx(comptime T: type, x: *TaggedVar, shape: []const usize, chain: *Chain) !*TaggedVar {
-    return try makefunc(BroadCastTo(T), x, shape, chain);
+pub fn softmaxCrossEntropyEx(comptime T: type, logits: *TaggedVar, target: *TaggedVar, axis: []const isize, chain: *Chain) !*TaggedVar {
+    return try makefunc(SoftmaxCrossEntropy(T), logits, target, axis, chain);
 }
