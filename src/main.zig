@@ -24,6 +24,7 @@ const meanSquaredErrorEx = tomorin.function.meanSquaredErrorEx;
 const sigmoid = tomorin.function.sigmoid;
 const sigmoidEx = tomorin.function.sigmoidEx;
 const linear = tomorin.function.linear;
+const softmaxCrossEntropyEx = tomorin.function.softmaxCrossEntropyEx;
 const TaggedVar = tomorin.variable.TaggedVar;
 
 const dbg = tomorin.util.debugPrintGpuTensor;
@@ -588,6 +589,54 @@ fn example5() !void {
     }
 }
 
+fn example6() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream: tomo.stream.Stream = try .create();
+    defer stream.destroy();
+
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
+    defer cuda_context.deinit();
+
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+
+    var xv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 4, 2 }, &stream);
+    defer xv.deinitAsync(&stream);
+    try xv.writeFromHostAsync(&.{ 0.2, -0.4, 0.3, 0.5, 1.3, -3.2, 2.0, 0.3 }, 0, &stream);
+
+    var tv: tomo.tensor.GPUTensor(usize) = try .initAsync(&.{4}, &stream);
+    defer tv.deinitAsync(&stream);
+    try tv.writeFromHostAsync(&.{ 2, 0, 1, 0 }, 0, &stream);
+
+    var t_one_hot = try tv.toOneHot(F, 3, &stream);
+    defer t_one_hot.deinitAsync(&stream);
+
+    const x = try base_chain.createVariable(F, xv.move(), "x");
+    const t = try base_chain.createVariable(F, t_one_hot.move(), "t");
+
+    var model: tomorin.layer.MLP(F, 2) = try .init(&.{ 10, 3 }, &context, base_chain);
+    defer model.destroy();
+
+    const y = try model.forward(x, sigmoidEx, base_chain);
+    const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, base_chain);
+
+    try loss.backward();
+
+    try dbg(F, &loss.asUntagged(F).data, &context);
+
+    try stream.sync();
+}
+
 pub fn main() !void {
-    try example5();
+    try example6();
 }

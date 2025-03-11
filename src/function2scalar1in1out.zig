@@ -170,3 +170,59 @@ pub fn scaleShift(comptime T: type, x: *TaggedVar, scal: T, shif: T) !*TaggedVar
 pub fn scaleShiftEx(comptime T: type, x: *TaggedVar, scal: T, shif: T, chain: *Chain) !*TaggedVar {
     return try makefunc(ScaleShift(T), x, scal, shif, chain);
 }
+
+pub fn Clip(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        scalar1: T, // min
+        scalar2: T, // max
+        base: FunctionBase,
+
+        pub const Scalar1 = T;
+        pub const Scalar2 = T;
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator2Scalar1in1out(Self);
+
+        const Self = Clip(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.clamp(self.scalar1, self.scalar2, context.stream);
+
+            return y;
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const context = self.base.context;
+
+            var mask_min = try self.in.?.asUntagged(T).data.cloneAsync(context.stream);
+            defer mask_min.deinitAsync(context.stream);
+
+            var mask_max = try self.in.?.asUntagged(T).data.cloneAsync(context.stream);
+            defer mask_max.deinitAsync(context.stream);
+
+            try mask_min.gtEq(self.scalar1, context.stream);
+            try mask_max.ltEq(self.scalar2, context.stream);
+
+            try mask_min.product(&mask_max, context.stream);
+
+            const mask = context.current_chain.?.createVariable(T, mask_min.move(), null);
+
+            return try mulEx(T, gy, mask, self.base.chain);
+        }
+    };
+}
+
+pub fn clip(comptime T: type, x: *TaggedVar, min: T, max: T) !*TaggedVar {
+    return try clipEx(T, x, min, max, x.getContext().current_chain.?);
+}
+
+pub fn clipEx(comptime T: type, x: *TaggedVar, min: T, max: T, chain: *Chain) !*TaggedVar {
+    return try makefunc(Clip(T), x, min, max, chain);
+}

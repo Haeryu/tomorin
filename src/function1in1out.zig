@@ -189,7 +189,7 @@ pub fn Exp(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            try y.exp(x, context.stream);
+            try y.exp(context.stream);
             return y;
         }
 
@@ -492,11 +492,11 @@ pub fn Sum(comptime T: type) type {
     };
 }
 
-pub fn sum(comptime T: type, x: *TaggedVar, axis: []const isize) !*TaggedVar {
+pub fn sum(comptime T: type, x: *TaggedVar, axis: ?[]const isize) !*TaggedVar {
     return try sumEx(T, x, axis, x.getContext().current_chain.?);
 }
 
-pub fn sumEx(comptime T: type, x: *TaggedVar, axis: []const isize, chain: *Chain) !*TaggedVar {
+pub fn sumEx(comptime T: type, x: *TaggedVar, axis: ?[]const isize, chain: *Chain) !*TaggedVar {
     const funckey = try Sum(T).create(x.getContext(), axis, chain);
 
     return try makefunc1in1outBase(funckey, x);

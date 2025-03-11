@@ -100,11 +100,13 @@ pub const FunctionBase = struct {
 
 pub usingnamespace @import("function1in1out.zig");
 pub usingnamespace @import("function1slice1in1out.zig");
+pub usingnamespace @import("function2slice1in1out.zig");
 // pub usingnamespace @import("function1in2out.zig");
 pub usingnamespace @import("function2in1out.zig");
 pub usingnamespace @import("function1scalar1in1out.zig");
 pub usingnamespace @import("function2scalar1in1out.zig");
 pub usingnamespace @import("function3in1out.zig");
+pub usingnamespace @import("function1tensor1slice1in1out.zig");
 
 // pub fn matyas(comptime T: type, x: VarKey, y: VarKey) !VarKey {
 //     const x_y_sq = try @This().add(T, try @This().square(T, x), try @This().square(T, y));

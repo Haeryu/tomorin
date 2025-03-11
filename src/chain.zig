@@ -92,15 +92,18 @@ pub const Chain = struct {
     pub fn destroyFunctions(self: *Chain) void {
         while (self.func_chain) |head| {
             //  self.func_chain = head.next;
-
+            const next = head.next;
             head.destroy();
+            self.func_chain = next;
         }
     }
 
     pub fn destroyVariables(self: *Chain) void {
         while (self.var_chain) |head| {
             //  self.var_chain = head.getNext();
+            const next = head.getNext();
             head.destroy();
+            self.var_chain = next;
         }
     }
 

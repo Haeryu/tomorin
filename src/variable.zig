@@ -42,16 +42,17 @@ pub fn Variable(comptime T: type) type {
         }
 
         pub fn unchain(self: *Self) void {
+            if (self.chain.var_chain) |head| {
+                if (head.asUntagged(T) == self) {
+                    self.chain.var_chain = self.getNext();
+                }
+            }
+
             if (self.prev) |prev| {
                 prev.setNext(self.next);
             }
             if (self.next) |next| {
                 next.setPrev(self.prev);
-            }
-            if (self.chain.var_chain) |head| {
-                if (head.asUntagged(T) == self) {
-                    self.chain.var_chain = self.getNext();
-                }
             }
 
             self.prev = null;
