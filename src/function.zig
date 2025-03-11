@@ -445,7 +445,7 @@ pub fn makefunc3in1outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar, 
 
     var in: [3]*TaggedVar = .{ x1, x2, x3 };
 
-    try func_ptr.forward(&in, out[0..2]);
+    try func_ptr.forward(&in, out[0..1]);
 
     return out[0].?;
 }

@@ -138,6 +138,7 @@ pub fn SoftmaxCrossEntropy(comptime T: type) type {
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
+            const batch_size: T = @floatFromInt(x.base.getShapeConst()[0]);
 
             var x_clone = try x.cloneAsync(context.stream);
             defer x_clone.deinitAsync(context.stream);
@@ -154,7 +155,7 @@ pub fn SoftmaxCrossEntropy(comptime T: type) type {
             var loss = try sumEx(T, prod, null, self.base.chain);
             defer loss.destroy();
 
-            var scale = try scaleEx(T, loss, -1.0 / @as(T, @floatFromInt(x.base.getShapeConst()[0])), self.base.chain);
+            var scale = try scaleEx(T, loss, -1.0 / batch_size, self.base.chain);
             defer scale.destroy();
 
             return scale.asUntagged(T).data.move();

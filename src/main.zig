@@ -637,6 +637,8 @@ fn example6() !void {
     try stream.sync();
 }
 
+// TODO: make metaprogramming tools that makes program easier
+// TODO: make functions "reuseable" to decrease gpu memory allocaton -> use func_chain reverse backward logic
 pub fn main() !void {
     try example6();
 }
