@@ -22,7 +22,6 @@ const expEx = @import("function1in1out.zig").expEx;
 const sumEx = @import("function1in1out.zig").sumEx;
 const mulEx = @import("function2in1out.zig").mulEx;
 const subEx = @import("function2in1out.zig").subEx;
-const getItemGradEx = @import("function2slice1in1out.zig").getItemGradEx;
 
 pub fn FuncDecorator1Slice1in1out(comptime Self: type) type {
     return struct {
@@ -325,15 +324,49 @@ pub fn GetItem(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try getItemGradEx(T, gy, self.in.?.getShape(), self.base.chain);
+            return try getItemGradEx(T, gy, self.slice, self.base.chain);
         }
     };
 }
 
 pub fn getItem(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice) !*TaggedVar {
-    return try logSoftmaxEx(T, x, slice, x.getContext().current_chain.?);
+    return try getItemEx(T, x, slice, x.getContext().current_chain.?);
 }
 
 pub fn getItemEx(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice, chain: *Chain) !*TaggedVar {
     return try makefunc(GetItem(T), x, slice, chain);
+}
+
+pub fn GetItemGrad(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        slice: []const GPUTensor(T).Slice, // slice
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1Slice1in1out(Self);
+
+        const Self = GetItemGrad(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            return try self.in.?.asUntagged(T).data.getItemGrad(context.allocator, self.slice, x, context.stream);
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try getItemEx(T, gy, self.slice, self.base.chain);
+        }
+    };
+}
+
+pub fn getItemGrad(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice) !*TaggedVar {
+    return try getItemGradEx(T, x, slice, x.getContext().current_chain.?);
+}
+
+pub fn getItemGradEx(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice, chain: *Chain) !*TaggedVar {
+    return try makefunc(GetItemGrad(T), x, slice, chain);
 }

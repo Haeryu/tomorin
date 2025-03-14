@@ -104,38 +104,3 @@ fn makefunc(comptime F: type, x: *TaggedVar, slice1: anytype, slice2: anytype, c
 
     return try makefunc1in1outBase(funckey, x);
 }
-
-pub fn GetItemGrad(comptime T: type) type {
-    return struct {
-        in: ?*TaggedVar,
-        out: ?*TaggedVar,
-        slice1: []const usize, // old shape
-        slice2: []const GPUTensor(T).Slice, // slice
-        base: FunctionBase,
-
-        pub const In = T;
-        pub const Out = T;
-
-        pub usingnamespace FuncDecorator2Slice1in1out(Self);
-
-        const Self = GetItemGrad(T);
-
-        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.context;
-
-            return try self.in.?.asUntagged(T).data.getItemGrad(context.allocator, self.slice2, x, context.stream);
-        }
-
-        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try getItemEx(T, gy, self.slice2, self.base.chain);
-        }
-    };
-}
-
-pub fn getItemGrad(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice, old_shape: []const usize) !*TaggedVar {
-    return try getItemGradEx(T, x, slice, old_shape, x.getContext().current_chain.?);
-}
-
-pub fn getItemGradEx(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice, old_shape: []const usize, chain: *Chain) !*TaggedVar {
-    return try makefunc(GetItemGrad(T), x, slice, old_shape, chain);
-}

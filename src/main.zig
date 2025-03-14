@@ -25,6 +25,7 @@ const sigmoid = tomorin.function.sigmoid;
 const sigmoidEx = tomorin.function.sigmoidEx;
 const linear = tomorin.function.linear;
 const softmaxCrossEntropyEx = tomorin.function.softmaxCrossEntropyEx;
+const getItemEx = tomorin.function.getItemEx;
 const TaggedVar = tomorin.variable.TaggedVar;
 
 const dbg = tomorin.util.debugPrintGpuTensor;
@@ -637,8 +638,131 @@ fn example6() !void {
     try stream.sync();
 }
 
+// TODO: make dataset, dataloader first
+// contains gputensor Batch -> return ?*GPutensor at .next() like iterator
+// cpu data -> fetch -> write at gpu data -> return gputensor
+fn example7() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream: tomo.stream.Stream = try .create();
+    defer stream.destroy();
+
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
+    defer cuda_context.deinit();
+
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+
+    const spiral = try tomorin.datasets.getSpiralAlloc(F, allocator, true);
+    defer allocator.free(spiral.x);
+    defer allocator.free(spiral.t);
+
+    var xv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ 300, 2 }, &stream);
+    defer xv.deinitAsync(&stream);
+
+    var tv: tomo.tensor.GPUTensor(usize) = try .initAsync(&.{300}, &stream);
+    defer tv.deinitAsync(&stream);
+
+    try xv.writeFromHostAsync(spiral.x, 0, &stream);
+    try tv.writeFromHostAsync(spiral.t, 0, &stream);
+
+    var t_one_hot = try tv.toOneHot(F, 3, &stream);
+    defer t_one_hot.deinitAsync(&stream);
+
+    const x = try base_chain.createVariable(F, xv.move(), "x");
+    const t = try base_chain.createVariable(F, t_one_hot.move(), "y");
+
+    const max_epoch = 300;
+    const batch_size = 30;
+    const hidden_size: comptime_int = 10;
+    // const lr = 1.0;
+    const data_size = spiral.x.len / 2;
+    const max_iter = try std.math.divCeil(usize, data_size, batch_size);
+
+    var model: tomorin.layer.MLP(F, 2) = try .init(&.{ hidden_size, 3 }, &context, base_chain);
+    defer model.destroy();
+
+    // var optimizer :tomorin.optimizer.MomentumSGD(F)= try .init(.default, &context);
+    // var optimizer:tomorin.optimizer.AdaGrad(F) = try .init(.default,  &context);
+    // var optimizer:tomorin.optimizer.AdaDelta(F) = try .init(.default,  &context);
+    // optimizer: tomorin.optimizer.Adam(F) = try .init(.default, &context);
+    var optimizer: tomorin.optimizer.AdamW(F) = try .init(.default, &context);
+    defer optimizer.deinit();
+
+    const iter_chain = try context.createChain();
+    context.current_chain = iter_chain;
+
+    var prng = std.Random.DefaultPrng.init(1984);
+    const random = prng.random();
+
+    for (0..max_epoch) |epoch| {
+        var indices = try allocator.alloc(usize, data_size);
+        defer allocator.free(indices);
+
+        for (0..data_size) |i| {
+            indices[i] = i;
+        }
+        random.shuffle(usize, indices);
+
+        var sum_loss: F = 0.0;
+
+        for (0..max_iter) |i| {
+            // const batch_index = indices[i];
+            const batch_slice = tomo.tensor.GPUTensor(F).Slice{
+                .start = @intCast(i * batch_size),
+                .stop = @intCast((i + 1) * batch_size),
+            };
+            const batch_x = try getItemEx(F, x, &.{ batch_slice, .all }, iter_chain);
+            const batch_t = try getItemEx(F, t, &.{ batch_slice, .all }, iter_chain);
+
+            const y = try model.forward(batch_x, sigmoidEx, iter_chain);
+            const loss = try softmaxCrossEntropyEx(F, y, batch_t, &.{1}, iter_chain);
+
+            x.setGrad(null);
+            model.clearGrads();
+            try loss.backwardEx(iter_chain);
+            var w0_before = try model.fields.l0.fields.w.?.asUntagged(F).data.toHost(allocator, &stream);
+            std.debug.print("W[0,0] before: {}\n", .{w0_before.at(&.{ 0, 0 }).*});
+            w0_before.deinit(allocator);
+
+            try optimizer.update(&model.getParams());
+
+            var w0_after = try model.fields.l0.fields.w.?.asUntagged(F).data.toHost(allocator, &stream);
+            std.debug.print("W[0,0] after: {}\n", .{w0_after.at(&.{ 0, 0 }).*});
+
+            var host_loss = try loss.asUntagged(F).data.toHost(allocator, &stream);
+            defer host_loss.deinit(allocator);
+
+            sum_loss += host_loss.at(&.{ 0, 0 }).* * @as(F, @floatFromInt(batch_size));
+
+            const params = model.getParams();
+            for (params) |param| {
+                if (param) |grad| {
+                    var host_grad = try grad.asUntagged(F).data.toHost(allocator, &stream);
+                    defer host_grad.deinit(allocator);
+                    std.debug.print("Gradient sample: {}\n", .{host_grad.at(&.{ 0, 0 }).*});
+                }
+            }
+
+            try optimizer.update(&model.getParams());
+        }
+
+        const avg_loss = sum_loss / @as(F, @floatFromInt(data_size));
+        std.debug.print("epoch {} loss {}\n", .{ epoch + 1, avg_loss });
+        iter_chain.clear();
+    }
+}
+
 // TODO: make metaprogramming tools that makes program easier
-// TODO: make functions "reuseable" to decrease gpu memory allocaton -> use func_chain reverse backward logic
 pub fn main() !void {
-    try example6();
+    try example7();
 }

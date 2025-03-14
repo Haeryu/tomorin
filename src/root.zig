@@ -7,3 +7,4 @@ pub const layer = @import("layer.zig");
 pub const chain = @import("chain.zig");
 pub const optimizer = @import("optimizer.zig");
 pub const util = @import("util.zig");
+pub const datasets = @import("datastes.zig");

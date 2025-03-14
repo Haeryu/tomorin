@@ -390,6 +390,18 @@ pub const TaggedVar = union(enum) {
         }
     }
 
+    pub fn backwardEx(self: *TaggedVar, chain: *Chain) !void {
+        // switch (self.*) {
+        //     inline else => try self.getContext().backward(T, self),
+        // }
+        switch (self.*) {
+            .bf16 => try self.getContext().backwardEx(BF16, self, chain),
+            .f16 => try self.getContext().backwardEx(f16, self, chain),
+            .f32 => try self.getContext().backwardEx(f32, self, chain),
+            .f64 => try self.getContext().backwardEx(f64, self, chain),
+        }
+    }
+
     pub fn detatchGrad(self: *TaggedVar) *TaggedVar {
         const grad = self.refGrad();
         self.setGrad(null);
