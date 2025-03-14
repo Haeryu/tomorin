@@ -1,9 +1,6 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // const cuda_path = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\";
-    // const cudnn_path = "C:\\Program Files\\NVIDIA\\CUDNN\\v9.7\\";
-
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -68,19 +65,46 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // const cuda_path = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\";
+    // const cudnn_path = "C:\\Program Files\\NVIDIA\\CUDNN\\v9.7\\";
+
     const lib_unit_tests = b.addTest(.{
         .root_module = lib_mod,
     });
+    lib_unit_tests.root_module.addImport("tomo", tomo.module("tomo"));
+    lib_unit_tests.root_module.addSystemIncludePath(b.path("zig-out/bin/"));
+    // lib_unit_tests.root_module.addImport("tomorin", lib_mod);
 
+    b.installArtifact(lib_unit_tests);
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    const exe_unit_tests = b.addTest(.{
-        .root_module = exe_mod,
-    });
+    // After setting up lib_unit_tests:
+    // var gpa: std.heap.DebugAllocator(.{}) = .init;
+    // defer _ = gpa.deinit();
 
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    // const allocator = gpa.allocator();
+
+    // const test_exe = lib_unit_tests.getEmittedBin();
+    // const test_dir = std.fs.path.dirname(test_exe.getPath(b)).?;
+
+    // const pppp = std.fs.path.join(allocator, &.{ lib_unit_tests.getEmittedBinDirectory().generated.sub_path, "tomo_kernels.dll" }) catch unreachable;
+    // defer allocator.free(pppp);
+
+    // const copy_dll_cmd = b.addSystemCommand(&[_][]const u8{
+    //     "copy",
+    //     "zig-out/bin/tomo_kernels.dll",
+    //     pppp,
+    // });
+    // copy_dll_cmd.step.dependOn(&lib_unit_tests.step);
+    // run_lib_unit_tests.step.dependOn(&copy_dll_cmd.step);
+
+    // const exe_unit_tests = b.addTest(.{
+    //     .root_module = exe_mod,
+    // });
+
+    // const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
-    test_step.dependOn(&run_exe_unit_tests.step);
+    // test_step.dependOn(&run_exe_unit_tests.step);
 }

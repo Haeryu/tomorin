@@ -205,7 +205,8 @@ pub fn Powf(comptime T: type) type {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
             errdefer y.deinitAsync(context.stream);
-            return try y.powf(self.scalar, context.cuda_context, context.stream);
+            try y.powf(self.scalar, context.stream);
+            return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
@@ -266,4 +267,201 @@ pub fn pow(comptime T: type, x: *TaggedVar, scalar: i32) !*TaggedVar {
 
 pub fn powEx(comptime T: type, x: *TaggedVar, scalar: i32, chain: *Chain) !*TaggedVar {
     return try makefunc(Pow(T), x, scalar, chain);
+}
+
+// tests
+fn testShift(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 2x2 tensor [1.0, 2.0, 3.0, 4.0]
+    const T = f32;
+    const shape = &[_]usize{ 2, 2 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    var gpu_input = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_input.deinitAsync(&stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, &stream);
+
+    var var_input = try base_chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    const scalar: T = 2.0;
+    var var_output = try shiftEx(T, var_input, scalar, base_chain);
+    defer var_output.destroy();
+
+    var gpu_output = var_output.asUntagged(T).data;
+    var host_output = try gpu_output.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // Expected: [1.0 + 2.0, 2.0 + 2.0, 3.0 + 2.0, 4.0 + 2.0] = [3.0, 4.0, 5.0, 6.0]
+    const expected = [_]T{ 3.0, 4.0, 5.0, 6.0 };
+    for (host_output.data, expected) |got, expe| {
+        if (@abs(got - expe) > 1e-6) return error.TestFailed;
+    }
+    std.debug.print("Shift test passed.\n", .{});
+}
+
+fn testScale(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 2x2 tensor [1.0, 2.0, 3.0, 4.0]
+    const T = f32;
+    const shape = &[_]usize{ 2, 2 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    var gpu_input = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_input.deinitAsync(&stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, &stream);
+
+    var var_input = try base_chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    const scalar: T = 3.0;
+    var var_output = try scaleEx(T, var_input, scalar, base_chain);
+    defer var_output.destroy();
+
+    var gpu_output = var_output.asUntagged(T).data;
+    var host_output = try gpu_output.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // Expected: [1.0 * 3.0, 2.0 * 3.0, 3.0 * 3.0, 4.0 * 3.0] = [3.0, 6.0, 9.0, 12.0]
+    const expected = [_]T{ 3.0, 6.0, 9.0, 12.0 };
+    for (host_output.data, expected) |got, expe| {
+        if (@abs(got - expe) > 1e-6) return error.TestFailed;
+    }
+    std.debug.print("Scale test passed.\n", .{});
+}
+
+fn testPowf(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 2x2 tensor [1.0, 2.0, 3.0, 4.0]
+    const T = f32;
+    const shape = &[_]usize{ 2, 2 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    var gpu_input = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_input.deinitAsync(&stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, &stream);
+
+    var var_input = try base_chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    const scalar: T = 2.0;
+    var var_output = try powfEx(T, var_input, scalar, base_chain);
+    defer var_output.destroy();
+
+    var gpu_output = var_output.asUntagged(T).data;
+    var host_output = try gpu_output.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // Expected: [1.0^2, 2.0^2, 3.0^2, 4.0^2] = [1.0, 4.0, 9.0, 16.0]
+    const expected = [_]T{ 1.0, 4.0, 9.0, 16.0 };
+    for (host_output.data, expected) |got, expe| {
+        if (@abs(got - expe) > 1e-6) return error.TestFailed;
+    }
+    std.debug.print("Powf test passed.\n", .{});
+}
+
+fn testPow(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 2x2 tensor [1.0, 2.0, 3.0, 4.0]
+    const T = f32;
+    const shape = &[_]usize{ 2, 2 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    var gpu_input = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_input.deinitAsync(&stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, &stream);
+
+    var var_input = try base_chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    const scalar: i32 = 3;
+    var var_output = try powEx(T, var_input, scalar, base_chain);
+    defer var_output.destroy();
+
+    var gpu_output = var_output.asUntagged(T).data;
+    var host_output = try gpu_output.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // Expected: [1.0^3, 2.0^3, 3.0^3, 4.0^3] = [1.0, 8.0, 27.0, 64.0]
+    const expected = [_]T{ 1.0, 8.0, 27.0, 64.0 };
+    for (host_output.data, expected) |got, expe| {
+        if (@abs(got - expe) > 1e-6) return error.TestFailed;
+    }
+    std.debug.print("Pow test passed.\n", .{});
+}
+
+pub fn test1s1i1o() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+    try testShift(allocator);
+    try testScale(allocator);
+    try testPowf(allocator);
+    try testPow(allocator);
+    std.debug.print("All scalar tests passed.\n", .{});
 }

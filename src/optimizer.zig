@@ -222,7 +222,7 @@ pub fn MomentumSGD(comptime T: type) type {
             return .{
                 .hyper_params = hyper_params,
                 .context = context,
-                .vs = try .init(context.allocator),
+                .vs = try .init(context.allocator, &.{}, &.{}),
             };
         }
 

@@ -681,88 +681,54 @@ fn example7() !void {
     const x = try base_chain.createVariable(F, xv.move(), "x");
     const t = try base_chain.createVariable(F, t_one_hot.move(), "y");
 
-    const max_epoch = 300;
-    const batch_size = 30;
-    const hidden_size: comptime_int = 10;
+    const max_epoch = 100000;
+    const hidden_size: comptime_int = 20;
     // const lr = 1.0;
-    const data_size = spiral.x.len / 2;
-    const max_iter = try std.math.divCeil(usize, data_size, batch_size);
 
-    var model: tomorin.layer.MLP(F, 2) = try .init(&.{ hidden_size, 3 }, &context, base_chain);
+    var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 3 }, &context, base_chain);
     defer model.destroy();
 
-    // var optimizer :tomorin.optimizer.MomentumSGD(F)= try .init(.default, &context);
-    // var optimizer:tomorin.optimizer.AdaGrad(F) = try .init(.default,  &context);
-    // var optimizer:tomorin.optimizer.AdaDelta(F) = try .init(.default,  &context);
-    // optimizer: tomorin.optimizer.Adam(F) = try .init(.default, &context);
+    //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
     var optimizer: tomorin.optimizer.AdamW(F) = try .init(.default, &context);
     defer optimizer.deinit();
 
     const iter_chain = try context.createChain();
     context.current_chain = iter_chain;
 
-    var prng = std.Random.DefaultPrng.init(1984);
-    const random = prng.random();
-
     for (0..max_epoch) |epoch| {
-        var indices = try allocator.alloc(usize, data_size);
-        defer allocator.free(indices);
+        const y = try model.forward(x, sigmoidEx, iter_chain);
+        const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
 
-        for (0..data_size) |i| {
-            indices[i] = i;
-        }
-        random.shuffle(usize, indices);
+        x.setGrad(null);
+        t.setGrad(null);
+        model.clearGrads();
+        try loss.backwardEx(iter_chain);
 
-        var sum_loss: F = 0.0;
+        try optimizer.update(&model.getParams());
 
-        for (0..max_iter) |i| {
-            // const batch_index = indices[i];
-            const batch_slice = tomo.tensor.GPUTensor(F).Slice{
-                .start = @intCast(i * batch_size),
-                .stop = @intCast((i + 1) * batch_size),
-            };
-            const batch_x = try getItemEx(F, x, &.{ batch_slice, .all }, iter_chain);
-            const batch_t = try getItemEx(F, t, &.{ batch_slice, .all }, iter_chain);
-
-            const y = try model.forward(batch_x, sigmoidEx, iter_chain);
-            const loss = try softmaxCrossEntropyEx(F, y, batch_t, &.{1}, iter_chain);
-
-            x.setGrad(null);
-            model.clearGrads();
-            try loss.backwardEx(iter_chain);
-            var w0_before = try model.fields.l0.fields.w.?.asUntagged(F).data.toHost(allocator, &stream);
-            std.debug.print("W[0,0] before: {}\n", .{w0_before.at(&.{ 0, 0 }).*});
-            w0_before.deinit(allocator);
-
-            try optimizer.update(&model.getParams());
-
-            var w0_after = try model.fields.l0.fields.w.?.asUntagged(F).data.toHost(allocator, &stream);
-            std.debug.print("W[0,0] after: {}\n", .{w0_after.at(&.{ 0, 0 }).*});
+        if (epoch % 1000 == 0) {
+            std.debug.print("{}\n", .{epoch / 1000});
 
             var host_loss = try loss.asUntagged(F).data.toHost(allocator, &stream);
             defer host_loss.deinit(allocator);
 
-            sum_loss += host_loss.at(&.{ 0, 0 }).* * @as(F, @floatFromInt(batch_size));
+            var host_y = try y.asUntagged(F).data.toHost(allocator, &stream);
+            defer host_y.deinit(allocator);
 
-            const params = model.getParams();
-            for (params) |param| {
-                if (param) |grad| {
-                    var host_grad = try grad.asUntagged(F).data.toHost(allocator, &stream);
-                    defer host_grad.deinit(allocator);
-                    std.debug.print("Gradient sample: {}\n", .{host_grad.at(&.{ 0, 0 }).*});
-                }
-            }
-
-            try optimizer.update(&model.getParams());
+            try stream.sync();
+            std.debug.print("epoch {} loss {d}\n", .{ epoch + 1, host_loss.at(&.{ 0, 0 }).* });
+            // std.debug.print("loss {d}\n", .{host_loss});
+            // std.debug.print("y {d}\n", .{host_y});
         }
 
-        const avg_loss = sum_loss / @as(F, @floatFromInt(data_size));
-        std.debug.print("epoch {} loss {}\n", .{ epoch + 1, avg_loss });
         iter_chain.clear();
     }
 }
 
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
-    try example7();
+    //try example7();
+    try tomorin.function.test1i1o();
+    try tomorin.function.test1s1i1o();
+    try tomorin.function.test1slice1i1o();
 }

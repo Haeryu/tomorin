@@ -14,5 +14,5 @@ pub fn debugPrintGpuTensor(comptime T: type, gpu_tensor: *const GPUTensor(T), co
     var host = try gpu_tensor.toHost(context.allocator, context.stream);
     defer host.deinit(context.allocator);
 
-    std.debug.print("{d}", .{host});
+    std.debug.print("{d}\n", .{host});
 }

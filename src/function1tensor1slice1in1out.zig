@@ -29,6 +29,8 @@ const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
 const logSoftmaxEx = @import("function1slice1in1out.zig").logSoftmaxEx;
 const softmaxEx = @import("function1slice1in1out.zig").softmaxEx;
 
+const dbg = @import("util.zig").debugPrintGpuTensor;
+
 // TODO: 1in1outBase -> 1in1scalar, 1in2scalar ...
 
 pub fn FuncDecorator1tensor1slice1in1out(comptime Self: type) type {
@@ -152,10 +154,14 @@ pub fn SoftmaxCrossEntropy(comptime T: type) type {
             var prod = try mulEx(T, logsm, self.t, self.base.chain);
             defer prod.destroy();
 
+            //try dbg(T, &logsm.asUntagged(T).data, context);
+            //try dbg(T, &prod.asUntagged(T).data, context);
+
             var loss = try sumEx(T, prod, null, self.base.chain);
             defer loss.destroy();
 
             var scale = try scaleEx(T, loss, -1.0 / batch_size, self.base.chain);
+            // var scale = try scaleEx(T, loss, 1.0 / batch_size, self.base.chain);
             defer scale.destroy();
 
             return scale.asUntagged(T).data.move();
@@ -165,6 +171,7 @@ pub fn SoftmaxCrossEntropy(comptime T: type) type {
             const batch_size = self.in.?.getShape()[0];
 
             const y = try softmaxEx(T, self.in.?, self.slice.?, self.base.chain);
+
             const y_min_onehot = try subEx(T, y, self.t, self.base.chain);
 
             const gy_scaled = try scaleEx(
