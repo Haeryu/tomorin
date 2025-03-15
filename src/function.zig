@@ -449,3 +449,14 @@ pub fn makefunc3in1outBase(func_ptr: *Function, x1: *TaggedVar, x2: *TaggedVar, 
 
     return out[0].?;
 }
+
+// test
+pub fn testFunctions() !void {
+    try @This().test1i1o();
+    try @This().test1s1i1o();
+    try @This().test1slice1i1o();
+    try @This().test1tensor1slice1i1o();
+    try @This().test2i1o();
+    try @This().test2Scalar1i1o();
+    try @This().test3i1o();
+}

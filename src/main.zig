@@ -727,8 +727,5 @@ fn example7() !void {
 
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
-    //try example7();
-    try tomorin.function.test1i1o();
-    try tomorin.function.test1s1i1o();
-    try tomorin.function.test1slice1i1o();
+    try example7();
 }

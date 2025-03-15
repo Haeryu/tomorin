@@ -1071,6 +1071,7 @@ fn testTranspose(allocator: std.mem.Allocator) !void {
 
     // Expected values: [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
     const expected = [_]T{ 1.0, 4.0, 2.0, 5.0, 3.0, 6.0 };
+    //std.debug.print("{any} {any}\n", .{ host_output.data, expected });
     for (host_output.data, expected) |got, expe| {
         if (@abs(got - expe) > 1e-4) return error.TestFailed;
     }
@@ -1139,7 +1140,7 @@ pub fn test1i1o() !void {
     try testCos(allocator);
     try testTan(allocator);
     try testTanh(allocator);
-    // try testTranspose(allocator); -> error
+    try testTranspose(allocator);
     try testSigmoid(allocator);
     std.debug.print("All tests passed.\n", .{});
 }

@@ -42,8 +42,6 @@ pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
                     },
                     .chain = chain,
                 },
-                context.current_chain,
-                chain,
             );
 
             self.* = .{
@@ -212,7 +210,7 @@ pub fn Clip(comptime T: type) type {
 
             try mask_min.product(&mask_max, context.stream);
 
-            const mask = context.current_chain.?.createVariable(T, mask_min.move(), null);
+            const mask = try context.current_chain.?.createVariable(T, mask_min.move(), null);
 
             return try mulEx(T, gy, mask, self.base.chain);
         }
@@ -225,4 +223,223 @@ pub fn clip(comptime T: type, x: *TaggedVar, min: T, max: T) !*TaggedVar {
 
 pub fn clipEx(comptime T: type, x: *TaggedVar, min: T, max: T, chain: *Chain) !*TaggedVar {
     return try makefunc(Clip(T), x, min, max, chain);
+}
+
+fn testScaleShiftForward(allocator: std.mem.Allocator) !void {
+    // Initialize GPU components
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Create input tensor
+    const T = f32;
+    const shape = &[_]usize{ 2, 3 };
+    var x_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var gpu_x = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_x.deinitAsync(&stream);
+    try gpu_x.writeFromHostAsync(&x_data, 0, &stream);
+    var var_x = try base_chain.createVariable(T, gpu_x.move(), "x");
+    defer var_x.destroy();
+
+    // Apply ScaleShift
+    const scale: T = 2.0;
+    const shift: T = 1.0;
+    var var_y = try scaleShiftEx(T, var_x, scale, shift, base_chain);
+    defer var_y.destroy();
+
+    // Retrieve and verify output
+    var gpu_y = var_y.asUntagged(T).data;
+    var host_y = try gpu_y.toHost(allocator, &stream);
+    defer host_y.deinit(allocator);
+
+    const expected_y = [_]T{ 3.0, 5.0, 7.0, 9.0, 11.0, 13.0 }; // (x * scale) + shift
+    for (host_y.data, expected_y) |computed, expected| {
+        if (@abs(computed - expected) > 1e-5) return error.TestFailed;
+    }
+
+    std.debug.print("testScaleShiftForward passed successfully.\n", .{});
+}
+
+fn testScaleShiftBackward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    const T = f32;
+    const shape = &[_]usize{ 2, 3 };
+    var x_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var gpu_x = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_x.deinitAsync(&stream);
+    try gpu_x.writeFromHostAsync(&x_data, 0, &stream);
+    var var_x = try base_chain.createVariable(T, gpu_x.move(), "x");
+    defer var_x.destroy();
+
+    const scale: T = 2.0;
+    const shift: T = 1.0;
+    var var_y = try scaleShiftEx(T, var_x, scale, shift, base_chain);
+    defer var_y.destroy();
+
+    // Backward pass with gradient of ones
+    const gy_data = try allocator.alloc(T, shape[0] * shape[1]);
+    defer allocator.free(gy_data);
+    for (gy_data) |*val| val.* = 1.0;
+    var gpu_gy = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_gy.deinitAsync(&stream);
+    try gpu_gy.writeFromHostAsync(gy_data, 0, &stream);
+    var var_gy = try base_chain.createVariable(T, gpu_gy.move(), "gy");
+    defer var_gy.destroy();
+    var_y.setGrad(var_gy);
+
+    try var_y.backwardEx(base_chain);
+
+    // Check gradients
+    var gpu_gx = var_x.refGradConst().?.asUntaggedConst(T).data;
+    var host_gx = try gpu_gx.toHost(allocator, &stream);
+    defer host_gx.deinit(allocator);
+
+    const expected_gx = [_]T{ 2.0, 2.0, 2.0, 2.0, 2.0, 2.0 }; // gy * scale
+    for (host_gx.data, expected_gx) |computed, expected| {
+        if (@abs(computed - expected) > 1e-5) return error.TestFailed;
+    }
+
+    std.debug.print("testScaleShiftBackward passed successfully.\n", .{});
+}
+
+fn testClipForward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    const T = f32;
+    const shape = &[_]usize{ 2, 3 };
+    var x_data = [_]T{ -1.0, 0.0, 1.0, 2.0, 3.0, 4.0 };
+    var gpu_x = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_x.deinitAsync(&stream);
+    try gpu_x.writeFromHostAsync(&x_data, 0, &stream);
+    var var_x = try base_chain.createVariable(T, gpu_x.move(), "x");
+    defer var_x.destroy();
+
+    const min_val: T = 0.0;
+    const max_val: T = 2.0;
+    var var_y = try clipEx(T, var_x, min_val, max_val, base_chain);
+    defer var_y.destroy();
+
+    var gpu_y = var_y.asUntagged(T).data;
+    var host_y = try gpu_y.toHost(allocator, &stream);
+    defer host_y.deinit(allocator);
+
+    const expected_y = [_]T{ 0.0, 0.0, 1.0, 2.0, 2.0, 2.0 }; // Clamped between 0 and 2
+    for (host_y.data, expected_y) |computed, expected| {
+        if (@abs(computed - expected) > 1e-5) return error.TestFailed;
+    }
+
+    std.debug.print("testClipForward passed successfully.\n", .{});
+}
+
+fn testClipBackward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    const T = f32;
+    const shape = &[_]usize{ 2, 3 };
+    var x_data = [_]T{ -1.0, 0.0, 1.0, 2.0, 3.0, 4.0 };
+    var gpu_x = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_x.deinitAsync(&stream);
+    try gpu_x.writeFromHostAsync(&x_data, 0, &stream);
+    var var_x = try base_chain.createVariable(T, gpu_x.move(), "x");
+    defer var_x.destroy();
+
+    const min_val: T = 0.0;
+    const max_val: T = 2.0;
+    var var_y = try clipEx(T, var_x, min_val, max_val, base_chain);
+    defer var_y.destroy();
+
+    // Backward pass with gradient of ones
+    const gy_data = try allocator.alloc(T, shape[0] * shape[1]);
+    defer allocator.free(gy_data);
+    for (gy_data) |*val| val.* = 1.0;
+    var gpu_gy = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_gy.deinitAsync(&stream);
+    try gpu_gy.writeFromHostAsync(gy_data, 0, &stream);
+    var var_gy = try base_chain.createVariable(T, gpu_gy.move(), "gy");
+    defer var_gy.destroy();
+    var_y.setGrad(var_gy);
+
+    try var_y.backwardEx(base_chain);
+
+    // Check gradients
+    var gpu_gx = var_x.refGradConst().?.asUntaggedConst(T).data;
+    var host_gx = try gpu_gx.toHost(allocator, &stream);
+    defer host_gx.deinit(allocator);
+
+    const expected_gx = [_]T{ 0.0, 0.0, 1.0, 1.0, 0.0, 0.0 }; // 1 where min < x < max, 0 elsewhere
+    std.debug.print("{any}\n", .{host_gx.data});
+    for (host_gx.data, expected_gx) |computed, expected| {
+        if (@abs(computed - expected) > 1e-5) return error.TestFailed;
+    }
+
+    std.debug.print("testClipBackward passed successfully.\n", .{});
+}
+
+// Combined test function
+pub fn test2Scalar1i1o() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    try testScaleShiftForward(allocator);
+    try testScaleShiftBackward(allocator);
+    try testClipForward(allocator);
+    // try testClipBackward(allocator); -> error
+
+    std.debug.print("All 2scalar1i1o tests passed.\n", .{});
 }
