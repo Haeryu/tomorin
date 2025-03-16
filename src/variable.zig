@@ -280,6 +280,10 @@ pub const TaggedVar = union(enum) {
         }
     }
 
+    pub fn clearGrad(self: *TaggedVar) void {
+        self.setGrad(null);
+    }
+
     pub fn protect(self: *TaggedVar) void {
         switch (self.*) {
             inline else => |*v| v.protect(),

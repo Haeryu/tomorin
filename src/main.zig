@@ -699,8 +699,8 @@ fn example7() !void {
         const y = try model.forward(x, sigmoidEx, iter_chain);
         const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
 
-        x.setGrad(null);
-        t.setGrad(null);
+        x.clearGrad();
+        t.clearGrad();
         model.clearGrads();
         try loss.backwardEx(iter_chain);
 
