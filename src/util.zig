@@ -16,3 +16,21 @@ pub fn debugPrintGpuTensor(comptime T: type, gpu_tensor: *const GPUTensor(T), co
 
     std.debug.print("{d}\n", .{host});
 }
+
+pub fn arangeAlloc(allocator: std.mem.Allocator, comptime T: type, start: T, stop: T, step: T) ![]T {
+    if (step == 0) return error.InvalidStep;
+
+    const len = (stop - start) / step;
+
+    const buf = try allocator.alloc(T, len);
+    errdefer allocator.free(buf);
+
+    for (buf, 0..) |*e, i| {
+        const val = start + step * i;
+        if (val >= stop) break;
+
+        e.* = val;
+    }
+
+    return buf;
+}

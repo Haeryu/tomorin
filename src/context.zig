@@ -9,7 +9,6 @@ const Function = @import("function.zig").Function;
 const TaggedVar = @import("variable.zig").TaggedVar;
 const Variable = @import("variable.zig").Variable;
 const Chain = @import("chain.zig").Chain;
-const Pool = @import("nina").container.pool.Pool;
 const BF16 = tomo.BF16;
 
 const function = @import("function.zig");

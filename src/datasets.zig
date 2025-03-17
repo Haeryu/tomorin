@@ -1,4 +1,7 @@
 const std = @import("std");
+const tomo = @import("tomo");
+const GPUTensor = tomo.tensor.GPUTensor;
+const Context = @import("context.zig").Context;
 
 pub fn getSpiralAlloc(comptime F: type, allocator: std.mem.Allocator, train: bool) !struct { x: []F, t: []usize } {
     const seed: u64 = if (train) 1984 else 2020;
@@ -48,4 +51,57 @@ pub fn getSpiralAlloc(comptime F: type, allocator: std.mem.Allocator, train: boo
     }
 
     return .{ .x = shuffled_x, .t = shuffled_t };
+}
+
+pub fn SpiralDataset(comptime T: type) type {
+    return struct {
+        x: []T,
+        t: []usize,
+        allocator: std.mem.Allocator,
+
+        pub const num_data: usize = 100;
+        pub const num_class: usize = 3;
+        pub const input_dim: usize = 2;
+        pub const data_size: usize = num_class * num_data;
+
+        const Self = @This();
+
+        pub fn init(allocator: std.mem.Allocator) !Self {
+            const spiral = try getSpiralAlloc(T, allocator, true);
+            errdefer allocator.free(spiral.x);
+            errdefer allocator.free(spiral.t);
+
+            return .{
+                .x = spiral.x,
+                .t = spiral.t,
+                .allocator = allocator,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.allocator.free(self.x);
+            self.allocator.free(self.t);
+        }
+
+        pub fn write(
+            self: *Self,
+            i: usize,
+            batch_i: usize,
+            batch: std.meta.Tuple(&.{ *GPUTensor(T), *GPUTensor(T) }),
+            context: *Context,
+        ) !void {
+            const data, const tag = batch;
+
+            const host_slice = self.x[batch_i * Self.input_dim .. (batch_i + 1) * Self.input_dim];
+            var host_tag: [3]T = .{0.0} ** Self.num_class;
+            host_tag[self.t[batch_i]] = 1.0; // one_hot
+
+            try data.writeFromHostAsync(host_slice, i * Self.input_dim, context.stream);
+            try tag.writeFromHostAsync(&host_tag, i * Self.num_class, context.stream);
+        }
+
+        pub fn len(_: *const Self) usize {
+            return Self.num_data;
+        }
+    };
 }

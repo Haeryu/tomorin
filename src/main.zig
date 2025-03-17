@@ -679,7 +679,7 @@ fn example7() !void {
     defer t_one_hot.deinitAsync(&stream);
 
     const x = try base_chain.createVariable(F, xv.move(), "x");
-    const t = try base_chain.createVariable(F, t_one_hot.move(), "y");
+    const t = try base_chain.createVariable(F, t_one_hot.move(), "t");
 
     const max_epoch = 100000;
     const hidden_size: comptime_int = 20;
@@ -725,7 +725,97 @@ fn example7() !void {
     }
 }
 
+fn example8() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream: tomo.stream.Stream = try .create();
+    defer stream.destroy();
+
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
+    defer cuda_context.deinit();
+
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+
+    var spiral: tomorin.datasets.SpiralDataset(F) = try .init(allocator);
+    defer spiral.deinit();
+
+    var data_loader: tomorin.dataloader.DataLoader(@TypeOf(spiral)) = try .init(
+        allocator,
+        &spiral,
+        20,
+        true,
+        &context,
+    );
+    defer data_loader.deinit();
+
+    var xv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ data_loader.batch_size, tomorin.datasets.SpiralDataset(F).input_dim }, &stream);
+    defer xv.deinitAsync(&stream);
+
+    var tv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ data_loader.batch_size, tomorin.datasets.SpiralDataset(F).num_class }, &stream);
+    defer tv.deinitAsync(&stream);
+
+    const x = try base_chain.createVariable(F, xv.move(), "x");
+    const t = try base_chain.createVariable(F, tv.move(), "t");
+
+    const max_epoch = 100000;
+    const hidden_size: comptime_int = 20;
+    // const lr = 1.0;
+
+    var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 3 }, &context, base_chain);
+    defer model.destroy();
+
+    //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
+    var optimizer: tomorin.optimizer.AdamW(F) = try .init(.default, &context);
+    defer optimizer.deinit();
+
+    const iter_chain = try context.createChain();
+    context.current_chain = iter_chain;
+
+    for (0..max_epoch) |epoch| {
+        _ = try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data });
+        // try dbg(F, &x.asUntagged(F).data, &context);
+        // try dbg(F, &t.asUntagged(F).data, &context);
+
+        const y = try model.forward(x, sigmoidEx, iter_chain);
+        const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
+
+        x.clearGrad();
+        t.clearGrad();
+        model.clearGrads();
+        try loss.backwardEx(iter_chain);
+
+        try optimizer.update(&model.getParams());
+
+        if (epoch % 1000 == 0) {
+            std.debug.print("{}\n", .{epoch / 1000});
+
+            var host_loss = try loss.asUntagged(F).data.toHost(allocator, &stream);
+            defer host_loss.deinit(allocator);
+
+            var host_y = try y.asUntagged(F).data.toHost(allocator, &stream);
+            defer host_y.deinit(allocator);
+
+            try stream.sync();
+            std.debug.print("epoch {} loss {d}\n", .{ epoch + 1, host_loss.at(&.{ 0, 0 }).* });
+            // std.debug.print("loss {d}\n", .{host_loss});
+            // std.debug.print("y {d}\n", .{host_y});
+        }
+
+        iter_chain.clear();
+    }
+}
+
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
-    try example7();
+    try example8();
 }
