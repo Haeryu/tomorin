@@ -660,6 +660,132 @@ pub fn sigmoidEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
     return try makefunc(Sigmoid(T), x, chain);
 }
 
+pub fn Relu(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Relu(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.relu(context.stream);
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const context = self.base.context;
+            var drelu = try gy.asUntagged(T).data.cloneAsync(context.stream);
+            errdefer drelu.deinitAsync(context.stream);
+            try drelu.reluBackward(&self.in.?.asUntagged(T).data, context.stream);
+
+            return try context.current_chain.?.createVariable(T, drelu.move(), null);
+        }
+    };
+}
+
+pub fn relu(comptime T: type, x: *TaggedVar) !*TaggedVar {
+    return try reluEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn reluEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Relu(T), x, chain);
+}
+
+pub fn Gelu(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Gelu(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.gelu(context.stream);
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const context = self.base.context;
+            var dgelu = try gy.asUntagged(T).data.cloneAsync(context.stream);
+            errdefer dgelu.deinitAsync(context.stream);
+            try dgelu.geluBackward(&self.in.?.asUntagged(T).data, context.stream);
+
+            return try context.current_chain.?.createVariable(T, dgelu.move(), null);
+        }
+    };
+}
+
+pub fn gelu(comptime T: type, x: *TaggedVar) !*TaggedVar {
+    return try geluEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn geluEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Gelu(T), x, chain);
+}
+
+pub fn LeakyRelu(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = LeakyRelu(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.leakyRelu(context.stream);
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const context = self.base.context;
+            var dleaky_relu = try gy.asUntagged(T).data.cloneAsync(context.stream);
+            errdefer dleaky_relu.deinitAsync(context.stream);
+            try dleaky_relu.leakyReluBackward(&self.in.?.asUntagged(T).data, context.stream);
+
+            return try context.current_chain.?.createVariable(T, dleaky_relu.move(), null);
+        }
+    };
+}
+
+pub fn leakyRelu(comptime T: type, x: *TaggedVar) !*TaggedVar {
+    return try leakyReluEx(T, x, x.getContext().current_chain.?);
+}
+
+pub fn leakyReluEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(LeakyRelu(T), x, chain);
+}
+
 // test
 fn testNeg(allocator: std.mem.Allocator) !void {
     var stream = try Stream.create();

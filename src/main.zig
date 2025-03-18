@@ -23,6 +23,8 @@ const meanSquaredError = tomorin.function.meanSquaredError;
 const meanSquaredErrorEx = tomorin.function.meanSquaredErrorEx;
 const sigmoid = tomorin.function.sigmoid;
 const sigmoidEx = tomorin.function.sigmoidEx;
+const reluEx = tomorin.function.reluEx;
+const geluEx = tomorin.function.geluEx;
 const linear = tomorin.function.linear;
 const softmaxCrossEntropyEx = tomorin.function.softmaxCrossEntropyEx;
 const getItemEx = tomorin.function.getItemEx;
@@ -752,7 +754,7 @@ fn example8() !void {
     var data_loader: tomorin.dataloader.DataLoader(@TypeOf(spiral)) = try .init(
         allocator,
         &spiral,
-        20,
+        50,
         true,
         &context,
     );
@@ -767,7 +769,7 @@ fn example8() !void {
     const x = try base_chain.createVariable(F, xv.move(), "x");
     const t = try base_chain.createVariable(F, tv.move(), "t");
 
-    const max_epoch = 100000;
+    const max_epoch = 100001;
     const hidden_size: comptime_int = 20;
     // const lr = 1.0;
 
@@ -781,41 +783,141 @@ fn example8() !void {
     const iter_chain = try context.createChain();
     context.current_chain = iter_chain;
 
+    const start = std.time.timestamp();
+
     for (0..max_epoch) |epoch| {
-        _ = try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data });
-        // try dbg(F, &x.asUntagged(F).data, &context);
-        // try dbg(F, &t.asUntagged(F).data, &context);
+        var sum_loss: F = 0.0;
+        var sum_acc: F = 0.0;
 
-        const y = try model.forward(x, sigmoidEx, iter_chain);
-        const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
+        while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| {
+            const y = try model.forward(x, sigmoidEx, iter_chain);
+            const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
 
-        x.clearGrad();
-        t.clearGrad();
-        model.clearGrads();
-        try loss.backwardEx(iter_chain);
+            const acc = try tomorin.util.accuracy(F, y, t, tomorin.datasets.SpiralDataset(F).num_class);
 
-        try optimizer.update(&model.getParams());
+            x.clearGrad();
+            t.clearGrad();
+            model.clearGrads();
+            try loss.backwardEx(iter_chain);
 
-        if (epoch % 1000 == 0) {
-            std.debug.print("{}\n", .{epoch / 1000});
+            try optimizer.update(&model.getParams());
 
             var host_loss = try loss.asUntagged(F).data.toHost(allocator, &stream);
             defer host_loss.deinit(allocator);
 
-            var host_y = try y.asUntagged(F).data.toHost(allocator, &stream);
-            defer host_y.deinit(allocator);
-
             try stream.sync();
-            std.debug.print("epoch {} loss {d}\n", .{ epoch + 1, host_loss.at(&.{ 0, 0 }).* });
-            // std.debug.print("loss {d}\n", .{host_loss});
-            // std.debug.print("y {d}\n", .{host_y});
+            sum_loss += host_loss.at(&.{ 0, 0 }).*;
+            sum_acc += acc;
+        }
+
+        if (epoch % 1000 == 0) {
+            const len = @as(F, @floatFromInt(tomorin.datasets.SpiralDataset(F).num_data)) / @as(F, @floatFromInt(data_loader.batch_size));
+            std.debug.print("epoch {} avg loss {d} acc {d}\n", .{ epoch + 1, sum_loss / len, sum_acc / len });
         }
 
         iter_chain.clear();
     }
+
+    const end = std.time.timestamp();
+
+    std.debug.print("done - elapsed {}\n", .{end - start});
+}
+
+fn example9() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream: tomo.stream.Stream = try .create();
+    defer stream.destroy();
+
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
+    defer cuda_context.deinit();
+
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+
+    var mnist: tomorin.datasets.MNISTDataset(F) = try .init(allocator, true);
+    defer mnist.deinit();
+
+    var data_loader: tomorin.dataloader.DataLoader(@TypeOf(mnist)) = try .init(
+        allocator,
+        &mnist,
+        100,
+        true,
+        &context,
+    );
+    defer data_loader.deinit();
+
+    var xv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ data_loader.batch_size, mnist.image_data.rows * mnist.image_data.columns }, &stream);
+    defer xv.deinitAsync(&stream);
+
+    var tv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{ data_loader.batch_size, 10 }, &stream);
+    defer tv.deinitAsync(&stream);
+
+    const x = try base_chain.createVariable(F, xv.move(), "x");
+    const t = try base_chain.createVariable(F, tv.move(), "t");
+
+    const max_epoch = 10;
+    const hidden_size: comptime_int = 20;
+    // const lr = 1.0;
+
+    var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 10 }, &context, base_chain);
+    defer model.destroy();
+
+    //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
+    var optimizer: tomorin.optimizer.AdamW(F) = try .init(.default, &context);
+    defer optimizer.deinit();
+
+    const iter_chain = try context.createChain();
+    context.current_chain = iter_chain;
+
+    const start = std.time.timestamp();
+
+    for (0..max_epoch) |epoch| {
+        var sum_loss: F = 0.0;
+        var sum_acc: F = 0.0;
+
+        while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| {
+            const y = try model.forward(x, geluEx, iter_chain);
+            const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
+
+            const acc = try tomorin.util.accuracy(F, y, t);
+
+            x.clearGrad();
+            t.clearGrad();
+            model.clearGrads();
+            try loss.backwardEx(iter_chain);
+
+            try optimizer.update(&model.getParams());
+
+            var host_loss = try loss.asUntagged(F).data.toHost(allocator, &stream);
+            defer host_loss.deinit(allocator);
+
+            try stream.sync();
+            sum_loss += host_loss.at(&.{ 0, 0 }).*;
+            sum_acc += acc;
+        }
+
+        const len: F = @floatFromInt(data_loader.max_iter);
+        std.debug.print("epoch {} avg loss {d} acc {d}\n", .{ epoch + 1, sum_loss / len, sum_acc / len });
+
+        iter_chain.clear();
+    }
+
+    const end = std.time.timestamp();
+
+    std.debug.print("done - elapsed {}\n", .{end - start});
 }
 
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
-    try example8();
+    try example9();
 }

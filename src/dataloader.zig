@@ -67,6 +67,7 @@ pub fn DataLoader(comptime Dataset: type) type {
         pub fn writeNextBatch(self: *Self, batch: anytype) !?usize {
             if (self.iteration >= self.max_iter) {
                 self.reset();
+                return null;
             }
 
             const batch_is = self.index[self.iteration * self.batch_size .. (self.iteration + 1) * self.batch_size];
@@ -78,11 +79,7 @@ pub fn DataLoader(comptime Dataset: type) type {
 
             self.iteration += 1;
 
-            if (self.iteration >= self.max_iter) {
-                return null;
-            } else {
-                return self.iteration;
-            }
+            return self.iteration;
         }
     };
 }

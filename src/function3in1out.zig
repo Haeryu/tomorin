@@ -180,7 +180,7 @@ pub fn Linear(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T), x3: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            var y = try x1.linear(x2, x3, context.stream);
+            var y = try x1.linearImp(x2, x3, context.stream);
             errdefer y.deinitAsync(context.stream);
 
             return y.move();
