@@ -54,10 +54,10 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
-        var iter = self.chain_head;
-        while (iter) |chain| {
-            iter = chain.next;
-            chain.destroy();
+        while (self.chain_head) |head| {
+            const next = head.next;
+            head.destroy();
+            self.chain_head = next;
         }
 
         self.chains.deinit();
@@ -78,14 +78,14 @@ pub const Context = struct {
     }
 
     pub fn destroyChain(self: *Context, chain: *Chain) void {
-        if (chain.prev) |prev| {
-            prev.next = chain.next;
-        }
-        if (chain.next) |next| {
-            next.prev = chain.prev;
-        }
-        chain.prev = null;
-        chain.next = null;
+        // if (chain.prev) |prev| {
+        //     prev.next = chain.next;
+        // }
+        // if (chain.next) |next| {
+        //     next.prev = chain.prev;
+        // }
+        // chain.prev = null;
+        // chain.next = null;
 
         chain.destroy();
         self.chains.destroy(chain);

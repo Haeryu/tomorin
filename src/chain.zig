@@ -110,6 +110,17 @@ pub const Chain = struct {
     pub fn destroy(self: *Chain) void {
         self.destroyFunctions();
         self.destroyVariables();
+        if (self.prev) |prev| {
+            prev.next = self.next;
+        }
+        if (self.next) |next| {
+            next.prev = self.prev;
+        }
+        if (self.context.chain_head == self) {
+            self.context.chain_head = self.next;
+        }
+        self.prev = null;
+        self.next = null;
         self.functions.deinit();
         self.tagged_vars.deinit();
     }

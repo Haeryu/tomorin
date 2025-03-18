@@ -842,6 +842,7 @@ fn example9() !void {
     defer context.deinit();
 
     const base_chain = try context.createChain();
+    defer base_chain.destroy();
     context.current_chain = base_chain;
 
     var mnist: tomorin.datasets.MNISTDataset(F) = try .init(allocator, true);
@@ -866,7 +867,7 @@ fn example9() !void {
     const t = try base_chain.createVariable(F, tv.move(), "t");
 
     const max_epoch = 10;
-    const hidden_size: comptime_int = 20;
+    const hidden_size: comptime_int = 100;
     // const lr = 1.0;
 
     var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 10 }, &context, base_chain);
@@ -877,6 +878,7 @@ fn example9() !void {
     defer optimizer.deinit();
 
     const iter_chain = try context.createChain();
+    defer iter_chain.destroy();
     context.current_chain = iter_chain;
 
     const start = std.time.timestamp();
@@ -904,12 +906,11 @@ fn example9() !void {
             try stream.sync();
             sum_loss += host_loss.at(&.{ 0, 0 }).*;
             sum_acc += acc;
+            iter_chain.clear();
         }
 
         const len: F = @floatFromInt(data_loader.max_iter);
         std.debug.print("epoch {} avg loss {d} acc {d}\n", .{ epoch + 1, sum_loss / len, sum_acc / len });
-
-        iter_chain.clear();
     }
 
     const end = std.time.timestamp();
