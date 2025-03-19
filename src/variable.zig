@@ -429,4 +429,59 @@ pub const TaggedVar = union(enum) {
             inline else => |*v| v.data.base.getCol(),
         };
     }
+
+    pub fn writeJsonString(self: *const TaggedVar, allocator: std.mem.Allocator, writer: anytype) !void {
+        switch (self.*) {
+            inline else => |v| {
+                var host = try v.data.toHost(allocator, v.context.stream);
+                defer host.deinit(allocator);
+                try std.json.stringify(host, .{}, writer);
+            },
+        }
+    }
+
+    pub fn fromJsonValue(comptime T: type, allocator: std.mem.Allocator, value: std.json.Value, context: *Context) !*TaggedVar {
+        var host = try std.json.parseFromValue(tomo.tensor.CPUTensor(T), allocator, value, .{});
+        defer host.deinit();
+
+        var device = try host.value.toDevice(context.stream);
+        errdefer device.deinitAsync(context.stream);
+
+        return switch (T) {
+            BF16 => .{ .bf16 = device },
+            f16 => .{ .f16 = device },
+            f32 => .{ .f32 = device },
+            f64 => .{ .f64 = device },
+            else => unreachable,
+        };
+    }
+
+    pub fn readJsonValue(self: *TaggedVar, allocator: std.mem.Allocator, value: std.json.Value) !void {
+        switch (self.*) {
+            .bf16 => |*v| {
+                var host = try std.json.parseFromValue(tomo.tensor.CPUTensor(BF16), allocator, value, .{});
+                defer host.deinit();
+
+                try v.data.writeFromHostAsync(host.value.data, 0, v.context.stream);
+            },
+            .f16 => |*v| {
+                var host = try std.json.parseFromValue(tomo.tensor.CPUTensor(f16), allocator, value, .{});
+                defer host.deinit();
+
+                try v.data.writeFromHostAsync(host.value.data, 0, v.context.stream);
+            },
+            .f32 => |*v| {
+                var host = try std.json.parseFromValue(tomo.tensor.CPUTensor(f32), allocator, value, .{});
+                defer host.deinit();
+
+                try v.data.writeFromHostAsync(host.value.data, 0, v.context.stream);
+            },
+            .f64 => |*v| {
+                var host = try std.json.parseFromValue(tomo.tensor.CPUTensor(f64), allocator, value, .{});
+                defer host.deinit();
+
+                try v.data.writeFromHostAsync(host.value.data, 0, v.context.stream);
+            },
+        }
+    }
 };

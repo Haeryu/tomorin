@@ -113,6 +113,102 @@ pub fn LayerDecorator(comptime Self: type) type {
                 }
             }
         }
+
+        fn writeJsonStringParam(name: []const u8, param: ?*TaggedVar, allocator: std.mem.Allocator, writer: anytype) !void {
+            try writer.print(
+                \\"param.{s}":
+            ,
+                .{name},
+            );
+            if (param) |p| {
+                try p.writeJsonString(allocator, writer);
+            } else {
+                try std.json.stringify(null, .{}, writer);
+            }
+        }
+
+        pub fn writeJsonStringField(self: *const Self, allocator: std.mem.Allocator, writer: anytype) !void {
+            const fields_info = @typeInfo(@FieldType(Self, "fields")).@"struct";
+            try writer.writeAll("{");
+            inline for (fields_info.fields, 0..) |field, i| {
+                if (field.type == ?*TaggedVar) {
+                    const param = @field(self.fields, field.name);
+                    try writeJsonStringParam(field.name, param, allocator, writer);
+                } else {
+                    var layer = @field(self.fields, field.name);
+                    try writer.print(
+                        \\"layer.{s}":
+                    ,
+                        .{field.name},
+                    );
+                    try layer.writeJsonStringField(allocator, writer);
+                }
+                if (i != fields_info.fields.len - 1) {
+                    try writer.writeAll(",");
+                }
+            }
+            try writer.writeAll("}");
+        }
+
+        pub fn saveJsonStringField(self: *const Self, allocator: std.mem.Allocator, sub_path: []const u8) !void {
+            var file = try std.fs.cwd().createFile(sub_path, .{});
+            defer file.close();
+
+            var buf_writer = std.io.bufferedWriter(file.writer());
+
+            try self.writeJsonStringField(allocator, file.writer());
+
+            try buf_writer.flush();
+        }
+
+        fn readJsonValueField(self: *Self, allocator: std.mem.Allocator, value: std.json.Value) !void {
+            if (value != .object) return error.NotObject;
+
+            var it = value.object.iterator();
+
+            const fields_info = @typeInfo(@FieldType(Self, "fields")).@"struct";
+
+            while (it.next()) |entry| {
+                if (std.mem.startsWith(u8, entry.key_ptr.*, "param.")) {
+                    inline for (fields_info.fields) |field| {
+                        if (field.type == ?*TaggedVar and std.mem.eql(u8, field.name, entry.key_ptr.*["param.".len..])) {
+                            if (entry.value_ptr.* == .null) {
+                                @field(self.fields, field.name) = null;
+                            } else {
+                                try @field(self.fields, field.name).?.readJsonValue(allocator, entry.value_ptr.*);
+                            }
+                        }
+                    }
+                } else if (std.mem.startsWith(u8, entry.key_ptr.*, "layer.")) {
+                    inline for (fields_info.fields) |field| {
+                        if (field.type != ?*TaggedVar and std.mem.eql(u8, field.name, entry.key_ptr.*["layer.".len..])) {
+                            try @field(self.fields, field.name).readJsonValueField(allocator, entry.value_ptr.*);
+                        }
+                    }
+                } else {
+                    return error.UnknownField;
+                }
+            }
+        }
+
+        pub fn readJsonStringField(self: *Self, allocator: std.mem.Allocator, src: []const u8) !void {
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, src, .{});
+            defer parsed.deinit();
+
+            const value = parsed.value;
+
+            try self.readJsonValueField(allocator, value);
+        }
+
+        pub fn loadJsonStringField(self: *Self, allocator: std.mem.Allocator, sub_path: []const u8) !void {
+            var file = try std.fs.cwd().openFile(sub_path, .{ .mode = .read_only });
+            defer file.close();
+
+            const src = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+            defer allocator.free(src);
+
+            try self.readJsonStringField(allocator, src);
+        }
     };
 }
 
