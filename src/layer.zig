@@ -353,7 +353,7 @@ pub fn MLP(
         pub fn forward(
             self: *Self,
             x: *TaggedVar,
-            comptime activation: fn (comptime T: type, x: *TaggedVar, chain: *Chain) anyerror!*TaggedVar,
+            activation: *const fn (comptime T: type, x: *TaggedVar, chain: *Chain) anyerror!*TaggedVar,
             chain: *Chain,
         ) !*TaggedVar {
             var y: *TaggedVar = x;

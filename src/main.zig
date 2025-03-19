@@ -1046,7 +1046,7 @@ fn example10() !void {
         timer.reset();
 
         while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| {
-            const y = try model.forward(x, geluEx, iter_chain);
+            const y = try model.forward(x, &geluEx, iter_chain);
             const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
 
             const acc = try tomorin.util.accuracy(F, y, t);
@@ -1081,5 +1081,6 @@ fn example10() !void {
 
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
+    // try example4();
     try example9();
 }
