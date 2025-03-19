@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) void {
     lib_unit_tests.root_module.addSystemIncludePath(b.path("zig-out/bin/"));
     // lib_unit_tests.root_module.addImport("tomorin", lib_mod);
 
-    b.installArtifact(lib_unit_tests);
+    // b.installArtifact(lib_unit_tests);
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     // After setting up lib_unit_tests:

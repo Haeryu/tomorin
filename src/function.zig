@@ -138,6 +138,10 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.context;
 
+            if (@hasDecl(Self, "predestroy")) {
+                self.predestroy();
+            }
+
             // if (self.in) |in| {
             //     // in.release();
             // }
@@ -226,6 +230,10 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.context;
+
+            if (@hasDecl(Self, "predestroy")) {
+                self.predestroy();
+            }
 
             // if (self.in1) |in1| {
             //     // in1.release();
@@ -332,6 +340,10 @@ pub fn FuncDecorator3in1outBase(comptime Self: type) type {
         pub fn destroy(ctx: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const context = self.base.context;
+
+            if (@hasDecl(Self, "predestroy")) {
+                self.predestroy();
+            }
 
             // if (self.in1) |in1| {
             //     // in1.release();

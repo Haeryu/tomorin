@@ -225,6 +225,76 @@ pub fn clipEx(comptime T: type, x: *TaggedVar, min: T, max: T, chain: *Chain) !*
     return try makefunc(Clip(T), x, min, max, chain);
 }
 
+pub fn Dropout(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        scalar1: T, // dropout_ratio
+        scalar2: bool, // train
+        base: FunctionBase,
+
+        mask: ?*TaggedVar = null,
+
+        pub const Scalar1 = T;
+        pub const Scalar2 = bool;
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator2Scalar1in1out(Self);
+
+        const Self = Dropout(T);
+
+        pub fn predestroy(self: *Self) void {
+            if (self.mask) |m| {
+                m.destroy();
+            }
+        }
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            if (self.scalar2) {
+                var y = try x.cloneAsync(context.stream);
+                errdefer y.deinitAsync(context.stream);
+
+                if (self.mask == null) {
+                    var mask: GPUTensor(T) = try .initAsync(x.base.getShape(), context.stream);
+                    errdefer mask.deinitAsync(context.stream);
+
+                    self.mask = try self.base.chain.createVariable(T, mask.move(), null);
+                }
+
+                try self.mask.?.asUntagged(T).data.fillUniform(context.cuda_context, context.stream);
+                try self.mask.?.asUntagged(T).data.gt(self.scalar1, context.stream);
+                const scale = 1.0 / (1.0 - self.scalar1);
+                try self.mask.?.asUntagged(T).data.scale(scale, context.stream);
+
+                try y.product(&self.mask.?.asUntagged(T).data, context.stream);
+
+                return y;
+            } else {
+                return try x.cloneAsync(context.stream);
+            }
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            if (self.scalar2) {
+                return try mulEx(T, gy, self.mask.?, self.base.chain);
+            } else {
+                return gy;
+            }
+        }
+    };
+}
+
+pub fn dropout(comptime T: type, x: *TaggedVar, dropout_ratio: T, train: bool) !*TaggedVar {
+    return try dropoutEx(T, x, dropout_ratio, train, x.getContext().current_chain.?);
+}
+
+pub fn dropoutEx(comptime T: type, x: *TaggedVar, dropout_ratio: T, train: bool, chain: *Chain) !*TaggedVar {
+    return try makefunc(Dropout(T), x, dropout_ratio, train, chain);
+}
+
+// tests
 fn testScaleShiftForward(allocator: std.mem.Allocator) !void {
     // Initialize GPU components
     var stream = try Stream.create();
