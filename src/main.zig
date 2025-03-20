@@ -836,8 +836,8 @@ fn example9() !void {
     defer cuda_context.deinit();
 
     var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
-        .init_func_capacity = 10,
-        .init_var_capacity = 10,
+        .init_func_capacity = 100,
+        .init_var_capacity = 100,
     });
     defer context.deinit();
 
