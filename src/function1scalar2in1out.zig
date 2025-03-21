@@ -21,9 +21,9 @@ const transposeEx = @import("function1in1out.zig").transposeEx;
 const sumToEx = @import("function1in1out.zig").sumToEx;
 const matmulEx = @import("function2in1out.zig").matmulEx;
 const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
-const Conv2d = @import("function1scalar3in1out.zig").Conv2d;
-const conv2dEx = @import("function1scalar3in1out.zig").conv2dEx;
-const deconv2dEx = @import("function1scalar3in1out.zig").deconv2dEx;
+const Conv2D = @import("function1scalar3in1out.zig").Conv2D;
+const conv2DEx = @import("function1scalar3in1out.zig").conv2DEx;
+const deconv2DEx = @import("function1scalar3in1out.zig").deconv2DEx;
 
 const getDeconvOutsize = @import("util.zig").getDeconvOutsize;
 
@@ -124,6 +124,325 @@ fn makefunc(
     return try makefunc2in1outBase(funckey, x1, x2);
 }
 
+pub fn Conv1DNoBias(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar,
+        in2: ?*TaggedVar,
+        out: ?*TaggedVar,
+        scalar: Option,
+        base: FunctionBase,
+
+        pub const In1 = T; // e.g. x
+        pub const In2 = T; // e.g. w
+        pub const Scalar = Option; // stride/pad/dil
+        pub const Out = T;
+
+        pub const Option = struct {
+            stride: usize,
+            padding: usize,
+            dilation: usize,
+        };
+
+        pub usingnamespace FuncDecorator1scalar2in1out(Self);
+
+        const Self = Conv1DNoBias(T);
+
+        /// forward: x => [N, C, L], w => [OutC, C, K]
+        pub fn forward(self: *Self, x: *const GPUTensor(T), w: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            const w_shape = w.base.getShapeConst(); // [OutC, InC, K]
+            const outc = w_shape[0];
+            const c = w_shape[1];
+            const k = w_shape[2];
+
+            var col = try x.im2col1d(
+                k,
+                self.scalar.stride,
+                self.scalar.padding,
+                self.scalar.dilation,
+                context.stream,
+            );
+            defer col.deinitAsync(context.stream);
+
+            var w_reshaped = try w.reshape(&.{ outc, c * k }, context.stream);
+            defer w_reshaped.deinitAsync(context.stream);
+
+            // tensordot across dimension=1 => shape [N, OutC, out_len]
+            var y = try col.tensordot(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
+            defer y.deinitAsync(context.stream);
+
+            var y_roll = try y.rollaxis(2, 1, context.stream);
+            defer y_roll.deinitAsync(context.stream);
+
+            return y_roll.move();
+        }
+
+        /// backward => (gx, gw)
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
+            const x = self.in1.?;
+            const w = self.in2.?;
+
+            // (1) gx => deconv1dNoBias(gy, w)
+            const gx = try deconv1DNoBiasEx(
+                T,
+                gy,
+                w,
+                .{
+                    .stride = self.scalar.stride,
+                    .padding = self.scalar.padding,
+                    .dilation = self.scalar.dilation,
+                    .outsize = x.getShape()[2],
+                },
+                self.base.chain,
+            );
+
+            // (2) gw => conv1dgradw( x, gy )
+            const gw = try conv1DgradwEx(
+                T,
+                x,
+                gy,
+                .{
+                    .w = w,
+                    .stride = self.scalar.stride,
+                    .padding = self.scalar.padding,
+                    .dilation = self.scalar.dilation,
+                },
+                self.base.chain,
+            );
+
+            return .{ gx, gw };
+        }
+    };
+}
+
+pub fn conv1DNoBias(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Conv1DNoBias(T).Option) !*TaggedVar {
+    return try conv1DNoBiasEx(T, x, w, option, x.getContext().current_chain.?);
+}
+
+pub fn conv1DNoBiasEx(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Conv1DNoBias(T).Option, chain: *Chain) !*TaggedVar {
+    return try makefunc(Conv1DNoBias(T), x, w, option, chain);
+}
+
+pub fn Deconv1DNoBias(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar,
+        in2: ?*TaggedVar,
+        out: ?*TaggedVar,
+        scalar: Option,
+        base: FunctionBase,
+
+        pub const In1 = T; // x
+        pub const In2 = T; // w
+        pub const Scalar = Option;
+        pub const Out = T;
+
+        pub const Option = struct {
+            stride: usize,
+            padding: usize,
+            dilation: usize,
+            outsize: ?usize,
+        };
+
+        pub usingnamespace FuncDecorator1scalar2in1out(Self);
+
+        const Self = Deconv1DNoBias(T);
+
+        /// forward => shape [N, OutC, outL]
+        pub fn forward(self: *Self, x: *const GPUTensor(T), w: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            const s = self.scalar.stride;
+            const p = self.scalar.padding;
+            const d = self.scalar.dilation;
+
+            const w_shape = w.base.getShapeConst(); // [OutC, InC, K]
+            const outc = w_shape[0];
+            const k = w_shape[2];
+
+            const x_shape = x.base.getShapeConst(); // [N, InC, L]
+            const n = x_shape[0];
+            const l = x_shape[2];
+
+            if (self.scalar.outsize == null) {
+                self.scalar.outsize = getDeconvOutsize(l, k, s, p);
+            }
+            const out_l = self.scalar.outsize.?;
+
+            const out_shape: [3]usize = .{ n, outc, out_l };
+
+            var gcol = try w.tensordot(
+                x,
+                context.allocator,
+                &.{0}, // match w OutC to nothing => keep it separate
+                &.{1}, // x InC dimension
+                context.stream,
+            );
+            defer gcol.deinitAsync(context.stream);
+
+            var gcol_roll = try gcol.rollaxis(3, 0, context.stream);
+            defer gcol_roll.deinitAsync(context.stream);
+
+            var y = try gcol_roll.col2im1d(
+                &out_shape,
+                k,
+                s,
+                p,
+                d,
+                context.stream,
+            );
+            errdefer y.deinitAsync(context.stream);
+
+            return y.move();
+        }
+
+        /// backward => (gx, gw)
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
+            const x = self.in1.?; // [N, InC, L]
+            const w = self.in2.?; // [OutC, InC, K]
+
+            // (1) gx => conv1dNoBias( gy, w )
+            const gx = try conv1DNoBiasEx(
+                T,
+                gy,
+                w,
+                .{
+                    .stride = self.scalar.stride,
+                    .padding = self.scalar.padding,
+                    .dilation = self.scalar.dilation,
+                },
+                self.base.chain,
+            );
+
+            // (2) gw => conv1dgradw( gy, x ), same as your 2D approach but 1D
+            const gw = try conv1DgradwEx(
+                T,
+                gy,
+                x,
+                .{
+                    .w = w,
+                    .stride = self.scalar.stride,
+                    .padding = self.scalar.padding,
+                    .dilation = self.scalar.dilation,
+                },
+                self.base.chain,
+            );
+
+            return .{ gx, gw };
+        }
+    };
+}
+
+pub fn deconv1DNoBias(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Deconv1DNoBias(T).Option) !*TaggedVar {
+    return try deconv1DNoBiasEx(T, x, w, option, x.getContext().current_chain.?);
+}
+
+pub fn deconv1DNoBiasEx(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Deconv1DNoBias(T).Option, chain: *Chain) !*TaggedVar {
+    return try makefunc(Deconv1DNoBias(T), x, w, option, chain);
+}
+
+pub fn Conv1DGradW(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar, // x
+        in2: ?*TaggedVar, // gy
+        out: ?*TaggedVar,
+        scalar: Scalar,
+        base: FunctionBase,
+
+        pub const In1 = T;
+        pub const In2 = T;
+        pub const In3 = T;
+        pub const Scalar = struct {
+            w: *TaggedVar, // original weight
+            stride: usize,
+            padding: usize,
+            dilation: usize,
+        };
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1scalar2in1out(Self);
+
+        const Self = Conv1DGradW(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T), gy: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            const w = self.scalar.w; // [OutC, InC, K]
+            const k = w.getShape()[2];
+
+            var col = try x.im2col1d(k, self.scalar.stride, self.scalar.padding, self.scalar.dilation, context.stream);
+            defer col.deinitAsync(context.stream);
+
+            // tensordot over N,L
+            var gw = try gy.tensordot(
+                &col,
+                context.allocator,
+                &.{ 0, 2 }, // sum over N, out_len
+                &.{ 0, 2 },
+                context.stream,
+            );
+            errdefer gw.deinitAsync(context.stream);
+
+            return gw.move();
+        }
+
+        pub fn backward(self: *Self, _: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
+            const x = self.in1.?; // [N, InC, L]
+            const gy = self.in2.?; // [N, OutC, outLen]
+            const gw = self.out.?; // [OutC, InC, K]
+
+            // (1) gradient wrt x => deconv1dNoBias(gy, gw)
+            const x_shape = x.getShape();
+            const out_l = x_shape[2];
+
+            const gx = try deconv1DNoBiasEx(
+                T,
+                gy,
+                gw,
+                .{
+                    .stride = self.scalar.stride,
+                    .padding = self.scalar.padding,
+                    .dilation = self.scalar.dilation,
+                    .outsize = out_l,
+                },
+                self.base.chain,
+            );
+
+            // (2) gradient wrt gy => conv1dNoBias(x, gw)
+            const ggy = try conv1DNoBiasEx(
+                T,
+                x,
+                gw,
+                .{
+                    .stride = self.scalar.stride,
+                    .padding = self.scalar.padding,
+                    .dilation = self.scalar.dilation,
+                },
+                self.base.chain,
+            );
+
+            return .{ gx, ggy };
+        }
+    };
+}
+
+pub fn conv1Dgradw(
+    comptime T: type,
+    x: *TaggedVar,
+    gy: *TaggedVar,
+    scalar: Conv1DGradW(T).Scalar,
+) !*TaggedVar {
+    return try conv1DgradwEx(T, x, gy, scalar, x.getContext().current_chain.?);
+}
+
+pub fn conv1DgradwEx(
+    comptime T: type,
+    x: *TaggedVar,
+    gy: *TaggedVar,
+    scalar: Conv1DGradW(T).Scalar,
+    chain: *Chain,
+) !*TaggedVar {
+    return try makefunc(Conv1DGradW(T), x, gy, scalar, chain);
+}
+
 pub fn Conv2DNoBias(comptime T: type) type {
     return struct {
         in1: ?*TaggedVar,
@@ -134,7 +453,7 @@ pub fn Conv2DNoBias(comptime T: type) type {
 
         pub const In1 = T;
         pub const In2 = T;
-        pub const Scalar = *Conv2d(T);
+        pub const Scalar = *Conv2D(T);
         pub const Out = T;
 
         pub usingnamespace FuncDecorator1scalar2in1out(Self);
@@ -173,7 +492,7 @@ pub fn Conv2DNoBias(comptime T: type) type {
             const x = self.in1.?;
             const w = self.in2.?;
 
-            const gx = try deconv2dNoBiasEx(
+            const gx = try deconv2DNoBiasEx(
                 T,
                 gy,
                 w,
@@ -186,7 +505,7 @@ pub fn Conv2DNoBias(comptime T: type) type {
                 self.base.chain,
             );
 
-            const gw = try conv2dgradwEx(
+            const gw = try conv2DgradwEx(
                 T,
                 x,
                 gy,
@@ -204,15 +523,15 @@ pub fn Conv2DNoBias(comptime T: type) type {
     };
 }
 
-pub fn conv2dNoBias(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Conv2DNoBias(T).Option) !*TaggedVar {
-    return try conv2dNoBiasEx(T, x, w, option, x.getContext().current_chain.?);
+pub fn conv2DNoBias(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Conv2DNoBias(T).Option) !*TaggedVar {
+    return try conv2DNoBiasEx(T, x, w, option, x.getContext().current_chain.?);
 }
 
-pub fn conv2dNoBiasEx(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Conv2DNoBias(T).Option, chain: *Chain) !*TaggedVar {
+pub fn conv2DNoBiasEx(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Conv2DNoBias(T).Option, chain: *Chain) !*TaggedVar {
     return try makefunc(Conv2DNoBias(T), x, w, option, chain);
 }
 
-pub fn Deconv2dNoBias(comptime T: type) type {
+pub fn Deconv2DNoBias(comptime T: type) type {
     return struct {
         in1: ?*TaggedVar,
         in2: ?*TaggedVar,
@@ -234,7 +553,7 @@ pub fn Deconv2dNoBias(comptime T: type) type {
 
         pub usingnamespace FuncDecorator1scalar2in1out(Self);
 
-        const Self = Deconv2dNoBias(T);
+        const Self = Deconv2DNoBias(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T), weight: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
@@ -286,7 +605,7 @@ pub fn Deconv2dNoBias(comptime T: type) type {
             const x = self.in1.?;
             const w = self.in2.?;
 
-            const gx = try conv2dNoBiasEx(
+            const gx = try conv2DNoBiasEx(
                 T,
                 gy,
                 w,
@@ -298,7 +617,7 @@ pub fn Deconv2dNoBias(comptime T: type) type {
                 self.base.chain,
             );
 
-            const gw = try conv2dgradwEx(
+            const gw = try conv2DgradwEx(
                 T,
                 gy,
                 x,
@@ -316,12 +635,12 @@ pub fn Deconv2dNoBias(comptime T: type) type {
     };
 }
 
-pub fn deconv2dNoBias(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Deconv2dNoBias(T).Option) !*TaggedVar {
-    return try conv2dEx(T, x, w, option, x.getContext().current_chain.?);
+pub fn deconv2DNoBias(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Deconv2DNoBias(T).Option) !*TaggedVar {
+    return try conv2DEx(T, x, w, option, x.getContext().current_chain.?);
 }
 
-pub fn deconv2dNoBiasEx(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Deconv2dNoBias(T).Option, chain: *Chain) !*TaggedVar {
-    return try makefunc(Deconv2dNoBias(T), x, w, option, chain);
+pub fn deconv2DNoBiasEx(comptime T: type, x: *TaggedVar, w: *TaggedVar, option: Deconv2DNoBias(T).Option, chain: *Chain) !*TaggedVar {
+    return try makefunc(Deconv2DNoBias(T), x, w, option, chain);
 }
 
 pub fn Conv2DGradW(comptime T: type) type {
@@ -377,7 +696,7 @@ pub fn Conv2DGradW(comptime T: type) type {
             const xh = x_shape[0];
             const xw = x_shape[1];
 
-            const gx = try deconv2dNoBiasEx(
+            const gx = try deconv2DNoBiasEx(
                 T,
                 gy,
                 gw,
@@ -390,7 +709,7 @@ pub fn Conv2DGradW(comptime T: type) type {
                 self.base.chain,
             );
 
-            const ggy = try conv2dNoBiasEx(
+            const ggy = try conv2DNoBiasEx(
                 T,
                 x,
                 gw,
@@ -407,12 +726,340 @@ pub fn Conv2DGradW(comptime T: type) type {
     };
 }
 
-pub fn conv2dgradw(comptime T: type, x: *TaggedVar, gy: *TaggedVar, scalar: Conv2DGradW(T).Scalar) !*TaggedVar {
-    return try conv2dgradwEx(T, x, gy, scalar, x.getContext().current_chain.?);
+pub fn conv2Dgradw(comptime T: type, x: *TaggedVar, gy: *TaggedVar, scalar: Conv2DGradW(T).Scalar) !*TaggedVar {
+    return try conv2DgradwEx(T, x, gy, scalar, x.getContext().current_chain.?);
 }
 
-pub fn conv2dgradwEx(comptime T: type, x: *TaggedVar, gy: *TaggedVar, scalar: Conv2DGradW(T).Scalar, chain: *Chain) !*TaggedVar {
+pub fn conv2DgradwEx(comptime T: type, x: *TaggedVar, gy: *TaggedVar, scalar: Conv2DGradW(T).Scalar, chain: *Chain) !*TaggedVar {
     return try makefunc(Conv2DGradW(T), x, gy, scalar, chain);
+}
+
+// tests
+fn testConv1DNoBiasForward(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
+    const T = f32;
+
+    //
+    // We'll do a simple 1D convolution:
+    //   input shape [1,1,4], data [1,2,3,4]
+    //   weight shape [1,1,2], data [1,1]
+    //   stride=1, padding=0 => output length = 4-2+1 = 3
+    // so expected output [3,5,7].
+    //
+
+    const input_shape = &[_]usize{ 1, 1, 4 };
+    var input_data = [_]T{ 1, 2, 3, 4 };
+    var gpu_input = try GPUTensor(T).initAsync(input_shape, stream);
+    defer gpu_input.deinitAsync(stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, stream);
+    const var_input = try chain.createVariable(T, gpu_input.move(), "conv1d_nobias_input");
+    defer var_input.destroy();
+
+    const weight_shape = &[_]usize{ 1, 1, 2 };
+    var weight_data = [_]T{ 1, 1 };
+    var gpu_weight = try GPUTensor(T).initAsync(weight_shape, stream);
+    defer gpu_weight.deinitAsync(stream);
+    try gpu_weight.writeFromHostAsync(&weight_data, 0, stream);
+    const var_weight = try chain.createVariable(T, gpu_weight.move(), "conv1d_nobias_weight");
+    defer var_weight.destroy();
+
+    const option = Conv1DNoBias(T).Option{
+        .stride = 1,
+        .padding = 0,
+        .dilation = 1,
+    };
+
+    var var_output = try conv1DNoBiasEx(T, var_input, var_weight, option, chain);
+    defer var_output.destroy();
+
+    var host_output = try var_output.asUntagged(T).data.toHost(allocator, stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // Expect output shape [1,1,3] => data [3,5,7]
+    const expected_data = [_]T{ 3, 5, 7 };
+    const expected_shape = &[_]usize{ 1, 1, 3 };
+
+    for (host_output.data, expected_data) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("Conv1DNoBias forward mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+    try std.testing.expectEqualSlices(usize, expected_shape, host_output.base.getShapeConst());
+
+    std.debug.print("Conv1DNoBias forward test passed.\n", .{});
+}
+
+fn testConv1DNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
+    const T = f32;
+
+    //
+    // Same forward setup:
+    //   input [1,2,3,4], weight [1,1]
+    // Then upstream gradient shape [1,1,3], data [1,1,1].
+    // We'll do numeric gradient for x, and check the final w‐gradient is [6,9].
+    //
+
+    // Setup input
+    const input_shape = &[_]usize{ 1, 1, 4 };
+    var input_data = [_]T{ 1, 2, 3, 4 };
+    var gpu_input = try GPUTensor(T).initAsync(input_shape, stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, stream);
+    const var_input = try chain.createVariable(T, gpu_input.move(), "conv1d_nobias_input");
+    defer var_input.destroy();
+
+    // Setup weight
+    const weight_shape = &[_]usize{ 1, 1, 2 };
+    var weight_data = [_]T{ 1, 1 };
+    var gpu_weight = try GPUTensor(T).initAsync(weight_shape, stream);
+    try gpu_weight.writeFromHostAsync(&weight_data, 0, stream);
+    const var_weight = try chain.createVariable(T, gpu_weight.move(), "conv1d_nobias_weight");
+    defer var_weight.destroy();
+
+    const option = Conv1DNoBias(T).Option{
+        .stride = 1,
+        .padding = 0,
+        .dilation = 1,
+    };
+
+    // Forward
+    var var_output = try conv1DNoBiasEx(T, var_input, var_weight, option, chain);
+    defer var_output.destroy();
+
+    // Upstream gradient => shape [1,1,3], data [1,1,1]
+    const gy_shape = &[_]usize{ 1, 1, 3 };
+    var gy_data = [_]T{ 1, 1, 1 };
+    var gpu_gy = try GPUTensor(T).initAsync(gy_shape, stream);
+    try gpu_gy.writeFromHostAsync(&gy_data, 0, stream);
+    const var_gy = try chain.createVariable(T, gpu_gy.move(), "conv1d_nobias_gy");
+    defer var_gy.destroy();
+
+    var_output.setGrad(var_gy);
+    try var_output.backwardEx(chain);
+
+    // read out gx, gw
+    const gx_data = var_input.refGrad().?.asUntagged(T).data;
+    var host_gx = try gx_data.toHost(allocator, stream);
+    defer host_gx.deinit(allocator);
+
+    const gw_data = var_weight.refGrad().?.asUntagged(T).data;
+    var host_gw = try gw_data.toHost(allocator, stream);
+    defer host_gw.deinit(allocator);
+
+    try stream.sync();
+
+    //------------------------------------------------
+    // Numeric gradient for x
+    //------------------------------------------------
+    const epsilon = 1e-4;
+    var numeric_gx = try allocator.alloc(T, input_data.len);
+    defer allocator.free(numeric_gx);
+
+    for (0..input_data.len) |i| {
+        // +epsilon
+        var input_plus = input_data;
+        input_plus[i] += epsilon;
+        var gpu_input_plus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_plus.writeFromHostAsync(&input_plus, 0, stream);
+        const var_input_plus = try chain.createVariable(T, gpu_input_plus.move(), "input_plus");
+        defer var_input_plus.destroy();
+        var var_out_plus = try conv1DNoBiasEx(T, var_input_plus, var_weight, option, chain);
+        defer var_out_plus.destroy();
+        var out_plus = try var_out_plus.asUntagged(T).data.toHost(allocator, stream);
+        defer out_plus.deinit(allocator);
+
+        // -epsilon
+        var input_minus = input_data;
+        input_minus[i] -= epsilon;
+        var gpu_input_minus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_minus.writeFromHostAsync(&input_minus, 0, stream);
+        const var_input_minus = try chain.createVariable(T, gpu_input_minus.move(), "input_minus");
+        defer var_input_minus.destroy();
+        var var_out_minus = try conv1DNoBiasEx(T, var_input_minus, var_weight, option, chain);
+        defer var_out_minus.destroy();
+        var out_minus = try var_out_minus.asUntagged(T).data.toHost(allocator, stream);
+        defer out_minus.deinit(allocator);
+
+        numeric_gx[i] = 0;
+        for (0..gy_data.len) |j| {
+            const diff = out_plus.data[j] - out_minus.data[j];
+            numeric_gx[i] += diff / (2 * epsilon) * gy_data[j];
+        }
+    }
+
+    // Compare
+    for (host_gx.data, numeric_gx) |analytical, numeric| {
+        if (@abs(analytical - numeric) > 1e-2) {
+            std.debug.print("Conv1DNoBias gx mismatch: got={any}, approx={any}\n", .{ analytical, numeric });
+            return error.TestFailed;
+        }
+    }
+
+    //------------------------------------------------
+    // Check weight gradient => [6,9]
+    //------------------------------------------------
+    // Windows: [ (1,2), (2,3), (3,4) ] => sums => (1+2+3)=6, (2+3+4)=9
+    const expected_gw = [_]T{ 6, 9 };
+    for (host_gw.data, expected_gw) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("Conv1DNoBias weight grad mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("Conv1DNoBias backward test passed.\n", .{});
+}
+
+fn testDeconv1DNoBiasForward(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
+    const T = f32;
+
+    //
+    // Input [1,2], shape(1,1,2), weight [1,1], shape(1,1,2).
+    // stride=1 => outsize= (2 - 1)*1 + 2=3 => output => [1,3,2].
+    //
+
+    const input_shape = &[_]usize{ 1, 1, 2 };
+    var input_data = [_]T{ 1, 2 };
+    var gpu_input = try GPUTensor(T).initAsync(input_shape, stream);
+    defer gpu_input.deinitAsync(stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, stream);
+    const var_input = try chain.createVariable(T, gpu_input.move(), "deconv1d_nobias_input");
+    defer var_input.destroy();
+
+    const weight_shape = &[_]usize{ 1, 1, 2 };
+    var weight_data = [_]T{ 1, 1 };
+    var gpu_weight = try GPUTensor(T).initAsync(weight_shape, stream);
+    defer gpu_weight.deinitAsync(stream);
+    try gpu_weight.writeFromHostAsync(&weight_data, 0, stream);
+    const var_weight = try chain.createVariable(T, gpu_weight.move(), "deconv1d_nobias_weight");
+    defer var_weight.destroy();
+
+    const option = Deconv1DNoBias(T).Option{
+        .stride = 1,
+        .padding = 0,
+        .dilation = 1,
+        .outsize = 3,
+    };
+
+    var var_output = try deconv1DNoBiasEx(T, var_input, var_weight, option, chain);
+    defer var_output.destroy();
+
+    var host_output = try var_output.asUntagged(T).data.toHost(allocator, stream);
+    defer host_output.deinit(allocator);
+    try stream.sync();
+
+    const expected_data = [_]T{ 1, 3, 2 };
+    const expected_shape = &[_]usize{ 1, 1, 3 };
+    for (host_output.data, expected_data) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("Deconv1DNoBias forward mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+    try std.testing.expectEqualSlices(usize, expected_shape, host_output.base.getShapeConst());
+
+    std.debug.print("Deconv1DNoBias forward test passed.\n", .{});
+}
+
+fn testDeconv1DNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
+    const T = f32;
+
+    //
+    // Same input: [1,2], weight: [1,1], outsize=3 => output => [1,3,2].
+    // Upstream gradient => shape(1,1,3) => [1,1,1].
+    // We'll do numeric gradient for x. No bias to check, so simpler.
+    //
+
+    const input_shape = &[_]usize{ 1, 1, 2 };
+    var input_data = [_]T{ 1, 2 };
+    var gpu_input = try GPUTensor(T).initAsync(input_shape, stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, stream);
+    const var_input = try chain.createVariable(T, gpu_input.move(), "deconv1d_nobias_input");
+    defer var_input.destroy();
+
+    const weight_shape = &[_]usize{ 1, 1, 2 };
+    var weight_data = [_]T{ 1, 1 };
+    var gpu_weight = try GPUTensor(T).initAsync(weight_shape, stream);
+    try gpu_weight.writeFromHostAsync(&weight_data, 0, stream);
+    const var_weight = try chain.createVariable(T, gpu_weight.move(), "deconv1d_nobias_weight");
+    defer var_weight.destroy();
+
+    const option = Deconv1DNoBias(T).Option{
+        .stride = 1,
+        .padding = 0,
+        .dilation = 1,
+        .outsize = 3,
+    };
+
+    // Forward
+    var var_output = try deconv1DNoBiasEx(T, var_input, var_weight, option, chain);
+    defer var_output.destroy();
+
+    // Upstream gradient => [1,1,3], data [1,1,1]
+    const gy_shape = &[_]usize{ 1, 1, 3 };
+    var gy_data = [_]T{ 1, 1, 1 };
+    var gpu_gy = try GPUTensor(T).initAsync(gy_shape, stream);
+    try gpu_gy.writeFromHostAsync(&gy_data, 0, stream);
+    const var_gy = try chain.createVariable(T, gpu_gy.move(), "deconv1d_nobias_gy");
+    defer var_gy.destroy();
+
+    var_output.setGrad(var_gy);
+    try var_output.backwardEx(chain);
+
+    const gx_data = var_input.refGrad().?.asUntagged(T).data;
+    var host_gx = try gx_data.toHost(allocator, stream);
+    defer host_gx.deinit(allocator);
+
+    try stream.sync();
+
+    //------------------------------------------------
+    // Numeric gradient check for x
+    //------------------------------------------------
+    const epsilon = 1e-4;
+    var numeric_gx = try allocator.alloc(T, input_data.len);
+    defer allocator.free(numeric_gx);
+
+    for (0..input_data.len) |i| {
+        // +epsilon
+        var input_plus = input_data;
+        input_plus[i] += epsilon;
+        var gpu_input_plus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_plus.writeFromHostAsync(&input_plus, 0, stream);
+        const var_input_plus = try chain.createVariable(T, gpu_input_plus.move(), "input_plus");
+        defer var_input_plus.destroy();
+        var var_out_plus = try deconv1DNoBiasEx(T, var_input_plus, var_weight, option, chain);
+        defer var_out_plus.destroy();
+        var out_plus = try var_out_plus.asUntagged(T).data.toHost(allocator, stream);
+        defer out_plus.deinit(allocator);
+
+        // -epsilon
+        var input_minus = input_data;
+        input_minus[i] -= epsilon;
+        var gpu_input_minus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_minus.writeFromHostAsync(&input_minus, 0, stream);
+        const var_input_minus = try chain.createVariable(T, gpu_input_minus.move(), "input_minus");
+        defer var_input_minus.destroy();
+        var var_out_minus = try deconv1DNoBiasEx(T, var_input_minus, var_weight, option, chain);
+        defer var_out_minus.destroy();
+        var out_minus = try var_out_minus.asUntagged(T).data.toHost(allocator, stream);
+        defer out_minus.deinit(allocator);
+
+        numeric_gx[i] = 0;
+        for (0..gy_data.len) |j| {
+            const diff = out_plus.data[j] - out_minus.data[j];
+            numeric_gx[i] += diff / (2.0 * epsilon) * gy_data[j];
+        }
+    }
+
+    for (host_gx.data, numeric_gx) |analytical, numeric| {
+        if (@abs(analytical - numeric) > 1e-2) {
+            std.debug.print("Deconv1DNoBias gx mismatch: got={any}, approx={any}\n", .{ analytical, numeric });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("Deconv1DNoBias backward test passed.\n", .{});
 }
 
 fn testConv2dNoBiasForward(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
@@ -446,7 +1093,7 @@ fn testConv2dNoBiasForward(allocator: std.mem.Allocator, stream: *Stream, chain:
     };
 
     // Forward pass
-    var var_output = try conv2dNoBiasEx(T, var_input, var_weight, option, chain);
+    var var_output = try conv2DNoBiasEx(T, var_input, var_weight, option, chain);
     defer var_output.destroy();
 
     var gpu_output = var_output.asUntagged(T).data;
@@ -495,7 +1142,7 @@ fn testConv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, chain
     };
 
     // Forward pass
-    var var_output = try conv2dNoBiasEx(T, var_input, var_weight, option, chain);
+    var var_output = try conv2DNoBiasEx(T, var_input, var_weight, option, chain);
     defer var_output.destroy();
 
     // Upstream gradient: shape = (1,1,2,2) with all ones
@@ -537,7 +1184,7 @@ fn testConv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, chain
         try gpu_input_plus.writeFromHostAsync(&input_plus, 0, stream);
         const var_input_plus = try chain.createVariable(T, gpu_input_plus.move(), "input_plus");
         defer var_input_plus.destroy();
-        var var_out_plus = try conv2dNoBiasEx(T, var_input_plus, var_weight, option, chain);
+        var var_out_plus = try conv2DNoBiasEx(T, var_input_plus, var_weight, option, chain);
         defer var_out_plus.destroy();
         var out_plus_host = try var_out_plus.asUntagged(T).data.toHost(allocator, stream);
         defer out_plus_host.deinit(allocator);
@@ -548,7 +1195,7 @@ fn testConv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, chain
         try gpu_input_minus.writeFromHostAsync(&input_minus, 0, stream);
         const var_input_minus = try chain.createVariable(T, gpu_input_minus.move(), "input_minus");
         defer var_input_minus.destroy();
-        var var_out_minus = try conv2dNoBiasEx(T, var_input_minus, var_weight, option, chain);
+        var var_out_minus = try conv2DNoBiasEx(T, var_input_minus, var_weight, option, chain);
         defer var_out_minus.destroy();
         var out_minus_host = try var_out_minus.asUntagged(T).data.toHost(allocator, stream);
         defer out_minus_host.deinit(allocator);
@@ -610,7 +1257,7 @@ fn testDeconv2dNoBiasForward(allocator: std.mem.Allocator, stream: *Stream, chai
 
     // Deconv2dNoBias options
     // We'll explicitly set outsize=3x3
-    const option = Deconv2dNoBias(T).Option{
+    const option = Deconv2DNoBias(T).Option{
         .stride = .{ 1, 1 },
         .padding = .{ 0, 0 },
         .dilation = .{ 1, 1 },
@@ -618,7 +1265,7 @@ fn testDeconv2dNoBiasForward(allocator: std.mem.Allocator, stream: *Stream, chai
     };
 
     // Forward pass
-    var var_output = try deconv2dNoBiasEx(T, var_input, var_weight, option, chain);
+    var var_output = try deconv2DNoBiasEx(T, var_input, var_weight, option, chain);
     defer var_output.destroy();
 
     var gpu_output = var_output.asUntagged(T).data;
@@ -664,7 +1311,7 @@ fn testDeconv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, cha
     defer var_weight.destroy();
 
     // Deconv2dNoBias options
-    const option = Deconv2dNoBias(T).Option{
+    const option = Deconv2DNoBias(T).Option{
         .stride = .{ 1, 1 },
         .padding = .{ 0, 0 },
         .dilation = .{ 1, 1 },
@@ -672,7 +1319,7 @@ fn testDeconv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, cha
     };
 
     // Forward pass
-    var var_output = try deconv2dNoBiasEx(T, var_input, var_weight, option, chain);
+    var var_output = try deconv2DNoBiasEx(T, var_input, var_weight, option, chain);
     defer var_output.destroy();
 
     // Upstream gradient: shape = (1,1,3,3) all ones
@@ -717,7 +1364,7 @@ fn testDeconv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, cha
         try gpu_input_plus.writeFromHostAsync(&input_plus, 0, stream);
         const var_input_plus = try chain.createVariable(T, gpu_input_plus.move(), "input_plus");
         defer var_input_plus.destroy();
-        var var_out_plus = try deconv2dNoBiasEx(T, var_input_plus, var_weight, option, chain);
+        var var_out_plus = try deconv2DNoBiasEx(T, var_input_plus, var_weight, option, chain);
         defer var_out_plus.destroy();
         var out_plus_host = try var_out_plus.asUntagged(T).data.toHost(allocator, stream);
         defer out_plus_host.deinit(allocator);
@@ -728,7 +1375,7 @@ fn testDeconv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, cha
         try gpu_input_minus.writeFromHostAsync(&input_minus, 0, stream);
         const var_input_minus = try chain.createVariable(T, gpu_input_minus.move(), "input_minus");
         defer var_input_minus.destroy();
-        var var_out_minus = try deconv2dNoBiasEx(T, var_input_minus, var_weight, option, chain);
+        var var_out_minus = try deconv2DNoBiasEx(T, var_input_minus, var_weight, option, chain);
         defer var_out_minus.destroy();
         var out_minus_host = try var_out_minus.asUntagged(T).data.toHost(allocator, stream);
         defer out_minus_host.deinit(allocator);
@@ -778,6 +1425,14 @@ pub fn test1scalar2i1o() !void {
     const chain = try context.createChain();
     context.current_chain = chain;
     defer chain.clear();
+
+    // 1) Conv1DNoBias forward/backward
+    try testConv1DNoBiasForward(allocator, &stream, chain);
+    try testConv1DNoBiasBackward(allocator, &stream, chain);
+
+    // 2) Deconv1DNoBias forward/backward
+    try testDeconv1DNoBiasForward(allocator, &stream, chain);
+    try testDeconv1DNoBiasBackward(allocator, &stream, chain);
 
     try testConv2dNoBiasForward(allocator, &stream, chain);
     try testConv2dNoBiasBackward(allocator, &stream, chain);
