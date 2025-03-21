@@ -660,6 +660,299 @@ pub fn deconv2DEx(comptime T: type, x: *TaggedVar, w: *TaggedVar, b: *TaggedVar,
     return try makefunc(Deconv2D(T), x, w, b, option, chain);
 }
 
+pub fn BatchNorm(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar, // x
+        in2: ?*TaggedVar, // gamma
+        in3: ?*TaggedVar, // beta
+        out: ?*TaggedVar,
+        scalar: Option,
+        base: FunctionBase,
+        inv_std: ?GPUTensor(T) = null, // Stored for backward pass during training
+
+        pub const In1 = T;
+        pub const In2 = T;
+        pub const In3 = T;
+        pub const Scalar = Option;
+        pub const Out = T;
+
+        pub const Option = struct {
+            running_mean: *TaggedVar, // External buffer, requires_grad=false
+            running_variance: *TaggedVar, // External buffer, requires_grad=false
+            decay: T,
+            eps: T,
+            train: bool,
+        };
+
+        pub usingnamespace FuncDecorator1scalar3in1out(Self);
+
+        const Self = BatchNorm(T);
+
+        /// Forward pass: Normalizes input x using batch statistics (training) or running averages (inference)
+        pub fn forward(self: *Self, x: *const GPUTensor(T), gamma: *const GPUTensor(T), beta: *const GPUTensor(T)) !GPUTensor(T) {
+            const allocator = self.base.context.allocator;
+            const stream = self.base.context.stream;
+
+            // Handle 2D or 4D input
+            var x_proc: GPUTensor(T) = blk: {
+                if (x.base.getShapeConst().len == 4) {
+                    const shape = x.base.getShapeConst();
+                    const N = shape[0];
+                    const C = shape[1];
+                    const H = shape[2];
+                    const W = shape[3];
+                    var x_trans = try x.transposeEx(self.base.context.allocator, &.{ 0, 2, 3, 1 }, stream);
+                    defer x_trans.deinitAsync(stream);
+                    var x_reshaped = try x_trans.reshape(&.{ N * H * W, C }, stream);
+                    errdefer x_reshaped.deinitAsync(stream);
+
+                    break :blk x_reshaped.move();
+                } else {
+                    break :blk try x.cloneAsync(stream);
+                }
+            };
+            defer x_proc.deinitAsync(stream);
+
+            const running_mean = &self.scalar.running_mean.asUntagged(T).data;
+            const running_variance = &self.scalar.running_variance.asUntagged(T).data;
+
+            // Compute normalized output
+            var y: GPUTensor(T) = blk: {
+                var xc: GPUTensor(T) = undefined;
+                if (self.scalar.train) {
+                    // Training mode: Compute batch statistics and update running averages
+                    var mean = try x_proc.mean(allocator, &.{0}, false, stream);
+                    defer mean.deinitAsync(stream);
+
+                    var variance_biased = try x_proc.variance(allocator, &.{0}, false, stream);
+                    defer variance_biased.deinitAsync(stream);
+
+                    // Compute unbiased variance adjustment
+                    const m = @as(T, @floatFromInt(x_proc.calcLen() / gamma.calcLen()));
+                    const s = if (m > 1) m - 1 else 1;
+                    const adjust = m / s;
+
+                    // Update running_mean
+                    try running_mean.scale(self.scalar.decay, stream);
+                    var temp_mean = try mean.cloneAsync(stream);
+                    defer temp_mean.deinitAsync(stream);
+                    try temp_mean.scale(1 - self.scalar.decay, stream);
+                    try running_mean.add(&temp_mean, stream);
+
+                    // Update running_variance with unbiased variance
+                    try running_variance.scale(self.scalar.decay, stream);
+                    var temp_variance = try variance_biased.cloneAsync(stream);
+                    defer temp_variance.deinitAsync(stream);
+                    try temp_variance.scale(adjust * (1 - self.scalar.decay), stream);
+                    try running_variance.add(&temp_variance, stream);
+
+                    // Compute inv_std for normalization and store for backward
+                    var inv_std = try variance_biased.cloneAsync(stream);
+                    defer inv_std.deinitAsync(stream); // Original inv_std is temporary
+                    try inv_std.shift(self.scalar.eps, stream);
+                    try inv_std.sqrt(stream);
+                    try inv_std.inv(stream);
+                    self.inv_std = try inv_std.cloneAsync(stream); // Store a copy
+                    errdefer self.inv_std.?.deinitAsync(stream);
+
+                    // Normalize: xc = (x - mean) * inv_std
+
+                    var mean_broad = try mean.broadcastTo(x_proc.base.getShapeConst(), stream);
+                    defer mean_broad.deinitAsync(stream);
+
+                    var inv_std_broad = try self.inv_std.?.broadcastTo(x_proc.base.getShapeConst(), stream);
+                    defer inv_std_broad.deinitAsync(stream);
+
+                    try x_proc.sub(&mean_broad, stream);
+                    try x_proc.product(&inv_std_broad, stream);
+                    xc = x_proc.move();
+                } else {
+                    // Inference mode: Use running averages
+                    var inv_std = try running_variance.cloneAsync(stream);
+                    defer inv_std.deinitAsync(stream);
+                    try inv_std.shift(self.scalar.eps, stream);
+                    try inv_std.sqrt(stream);
+                    try inv_std.inv(stream);
+
+                    try x_proc.sub(running_mean, stream);
+                    try x_proc.product(&inv_std, stream);
+                    xc = x_proc.move();
+                }
+
+                // Apply gamma and beta with broadcasting
+                var gamma_broad = try gamma.broadcastTo(xc.base.getShapeConst(), stream);
+                defer gamma_broad.deinitAsync(stream);
+                var beta_broad = try beta.broadcastTo(xc.base.getShapeConst(), stream);
+                defer beta_broad.deinitAsync(stream);
+
+                var y_temp = try xc.cloneAsync(stream);
+                defer y_temp.deinitAsync(stream);
+                try y_temp.product(&gamma_broad, stream);
+                try y_temp.add(&beta_broad, stream);
+
+                // Reshape back if input was 4D
+                if (x.base.getShapeConst().len == 4) {
+                    const shape = x.base.getShapeConst();
+                    const N = shape[0];
+                    const C = shape[1];
+                    const H = shape[2];
+                    const W = shape[3];
+                    var y_reshaped = try y_temp.reshape(&.{ N, H, W, C }, stream);
+                    defer y_reshaped.deinitAsync(stream);
+                    var y_trans = try y_reshaped.transposeEx(self.base.context.allocator, &.{ 0, 3, 1, 2 }, stream);
+                    errdefer y_trans.deinitAsync(stream);
+                    break :blk y_trans.move();
+                } else {
+                    break :blk y_temp.move();
+                }
+            };
+
+            return y.move();
+        }
+
+        /// Backward pass: Computes gradients for x, gamma, and beta
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar, *TaggedVar }) {
+            const allocator = self.base.context.allocator;
+            const stream = self.base.context.stream;
+            var gy_tensor = gy.asUntagged(T).data;
+
+            // Handle 4D gradient input
+            var gy_proc: GPUTensor(T) = blk: {
+                if (gy_tensor.base.getShapeConst().len == 4) {
+                    const shape = gy_tensor.base.getShapeConst();
+                    const N = shape[0];
+                    const C = shape[1];
+                    const H = shape[2];
+                    const W = shape[3];
+                    var gy_trans = try gy_tensor.transposeEx(self.base.context.allocator, &.{ 0, 2, 3, 1 }, stream);
+                    defer gy_trans.deinitAsync(stream);
+                    var gy_reshaped = try gy_trans.reshape(&.{ N * H * W, C }, stream);
+                    errdefer gy_reshaped.deinitAsync(stream);
+                    break :blk gy_reshaped.move();
+                } else {
+                    break :blk try gy_tensor.cloneAsync(stream);
+                }
+            };
+            defer gy_proc.deinitAsync(stream);
+
+            var x_tensor = &self.in1.?.asUntagged(T).data;
+            var gamma = &self.in2.?.asUntagged(T).data;
+
+            var x_proc: GPUTensor(T) = blk: {
+                if (x_tensor.base.getShapeConst().len == 4) {
+                    const shape = x_tensor.base.getShapeConst();
+                    const N = shape[0];
+                    const C = shape[1];
+                    const H = shape[2];
+                    const W = shape[3];
+                    var x_trans = try x_tensor.transposeEx(self.base.context.allocator, &.{ 0, 2, 3, 1 }, stream);
+                    defer x_trans.deinitAsync(stream);
+                    var x_reshaped = try x_trans.reshape(&.{ N * H * W, C }, stream);
+                    errdefer x_reshaped.deinitAsync(stream);
+                    break :blk x_reshaped.move();
+                } else {
+                    break :blk try x_tensor.cloneAsync(stream);
+                }
+            };
+            defer x_proc.deinitAsync(stream);
+
+            const batch_size = @as(T, @floatFromInt(gy_proc.base.getShapeConst()[0]));
+
+            // Compute gradients
+            var mean = try x_proc.mean(allocator, &.{0}, false, stream);
+            defer mean.deinitAsync(stream);
+
+            var xc = try x_proc.cloneAsync(stream);
+            defer xc.deinitAsync(stream);
+            try xc.sub(&mean, stream);
+            try xc.product(&self.inv_std.?, stream);
+
+            var gbeta = try gy_proc.sum(allocator, &.{0}, false, stream);
+            defer gbeta.deinitAsync(stream);
+
+            var xc_gy = try xc.cloneAsync(stream);
+            defer xc_gy.deinitAsync(stream);
+            try xc_gy.product(&gy_proc, stream);
+            var ggamma = try xc_gy.sum(allocator, &.{0}, false, stream);
+            defer ggamma.deinitAsync(stream);
+
+            var gx = try gy_proc.cloneAsync(stream);
+            defer gx.deinitAsync(stream);
+            var gbeta_term = try gbeta.cloneAsync(stream);
+            defer gbeta_term.deinitAsync(stream);
+            try gbeta_term.scale(1 / batch_size, stream);
+            try gx.sub(&gbeta_term, stream);
+
+            var ggamma_term = try ggamma.cloneAsync(stream);
+            defer ggamma_term.deinitAsync(stream);
+            try ggamma_term.scale(1 / batch_size, stream);
+            var xc_ggamma = try xc.cloneAsync(stream);
+            defer xc_ggamma.deinitAsync(stream);
+            try xc_ggamma.product(&ggamma_term, stream);
+            try gx.sub(&xc_ggamma, stream);
+
+            var gamma_inv_std = try gamma.cloneAsync(stream);
+            defer gamma_inv_std.deinitAsync(stream);
+            try gamma_inv_std.product(&self.inv_std.?, stream);
+            try gx.product(&gamma_inv_std, stream);
+
+            // Reshape gx back if input was 4D
+            var gx_final: GPUTensor(T) = blk: {
+                if (x_tensor.base.getShapeConst().len == 4) {
+                    const shape = x_tensor.base.getShapeConst();
+                    const N = shape[0];
+                    const C = shape[1];
+                    const H = shape[2];
+                    const W = shape[3];
+                    var gx_reshaped = try gx.reshape(&.{ N, H, W, C }, stream);
+                    defer gx_reshaped.deinitAsync(stream);
+                    var gx_trans = try gx_reshaped.transposeEx(self.base.context.allocator, &.{ 0, 3, 1, 2 }, stream);
+                    errdefer gx_trans.deinitAsync(stream);
+                    break :blk gx_trans.move();
+                } else {
+                    break :blk gx.move();
+                }
+            };
+            defer gx_final.deinitAsync(stream);
+
+            // Create TaggedVar for gradients
+            const gx_v = try self.base.chain.createVariable(T, gx_final.move(), null);
+            const ggamma_v = try self.base.chain.createVariable(T, ggamma.move(), null);
+            const gbeta_v = try self.base.chain.createVariable(T, gbeta.move(), null);
+
+            return .{ gx_v, ggamma_v, gbeta_v };
+        }
+
+        /// Cleanup function to deallocate inv_std
+        pub fn predestroy(self: *Self) void {
+            if (self.inv_std) |*inv_std| {
+                inv_std.deinitAsync(self.base.context.stream);
+            }
+        }
+    };
+}
+
+pub fn batchNorm(
+    comptime T: type,
+    x: *TaggedVar,
+    gamma: *TaggedVar,
+    beta: *TaggedVar,
+    option: BatchNorm(T).Option,
+) !*TaggedVar {
+    return try batchNormEx(T, x, gamma, beta, option, x.getContext().current_chain.?);
+}
+
+pub fn batchNormEx(
+    comptime T: type,
+    x: *TaggedVar,
+    gamma: *TaggedVar,
+    beta: *TaggedVar,
+    option: BatchNorm(T).Option,
+    chain: *Chain,
+) !*TaggedVar {
+    return try makefunc(BatchNorm(T), x, gamma, beta, option, chain);
+}
+
 // tests
 fn testConv1dForward(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
     const T = f32;
@@ -1433,6 +1726,209 @@ fn testDeconv2dBackward(allocator: std.mem.Allocator, stream: *Stream, chain: *C
     std.debug.print("Deconv2d backward test passed.\n", .{});
 }
 
+fn testBatchNormForwardBackward2D(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
+    const T = f32;
+
+    // **Input Setup**
+    // Input shape: (N=2, C=3) => [[1, 2, 3], [4, 5, 6]]
+    const input_shape = &[_]usize{ 2, 3 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var gpu_input = try GPUTensor(T).initAsync(input_shape, stream);
+    defer gpu_input.deinitAsync(stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, stream);
+    var var_input = try chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    // **Gamma Setup**
+    // Gamma shape: (3,) => [1, 1, 1]
+    const gamma_shape = &[_]usize{3};
+    var gamma_data = [_]T{ 1.0, 1.0, 1.0 };
+    var gpu_gamma = try GPUTensor(T).initAsync(gamma_shape, stream);
+    defer gpu_gamma.deinitAsync(stream);
+    try gpu_gamma.writeFromHostAsync(&gamma_data, 0, stream);
+    var var_gamma = try chain.createVariable(T, gpu_gamma.move(), "gamma");
+    defer var_gamma.destroy();
+
+    // **Beta Setup**
+    // Beta shape: (3,) => [0, 0, 0]
+    const beta_shape = &[_]usize{3};
+    var beta_data = [_]T{ 0.0, 0.0, 0.0 };
+    var gpu_beta = try GPUTensor(T).initAsync(beta_shape, stream);
+    defer gpu_beta.deinitAsync(stream);
+    try gpu_beta.writeFromHostAsync(&beta_data, 0, stream);
+    var var_beta = try chain.createVariable(T, gpu_beta.move(), "beta");
+    defer var_beta.destroy();
+
+    // **Running Mean Setup**
+    // Running mean shape: (3,), initialized to [0, 0, 0], requires_grad=false
+    var running_mean_tensor = try GPUTensor(T).initAsync(&[_]usize{3}, stream);
+    defer running_mean_tensor.deinitAsync(stream);
+    try running_mean_tensor.fill(0.0, stream);
+    var running_mean = try chain.createVariable(T, running_mean_tensor.move(), "running_mean");
+    defer running_mean.destroy();
+
+    // **Running Variance Setup**
+    // Running variance shape: (3,), initialized to [0, 0, 0], requires_grad=false
+    var running_variance_tensor = try GPUTensor(T).initAsync(&[_]usize{3}, stream);
+    defer running_variance_tensor.deinitAsync(stream);
+    try running_variance_tensor.fill(0.0, stream);
+    var running_variance = try chain.createVariable(T, running_variance_tensor.move(), "running_variance");
+    defer running_variance.destroy();
+
+    // **BatchNorm Options**
+    const option = BatchNorm(T).Option{
+        .running_mean = running_mean,
+        .running_variance = running_variance,
+        .decay = 0.9,
+        .eps = 1e-5,
+        .train = true,
+    };
+
+    // **Forward Pass**
+    var var_output = try batchNormEx(T, var_input, var_gamma, var_beta, option, chain);
+    defer var_output.destroy();
+
+    // **Check Output**
+    var host_output = try var_output.asUntagged(T).data.toHost(allocator, stream);
+    defer host_output.deinit(allocator);
+    try stream.sync();
+
+    // Expected output: [[-1, -1, -1], [1, 1, 1]]
+    // - For each feature: mean = (x1 + x2)/2, var_biased = ((x1-mean)^2 + (x2-mean)^2)/2
+    // - Feature 0: mean=2.5, var=2.25, std=sqrt(2.25)=1.5, (1-2.5)/1.5=-1, (4-2.5)/1.5=1
+    // - Similarly for features 1 and 2
+    const expected_output = [_]T{ -1.0, -1.0, -1.0, 1.0, 1.0, 1.0 };
+    for (host_output.data, expected_output) |got, exp| {
+        if (@abs(got - exp) > 1e-3) { // Slightly larger tolerance for floating-point
+            std.debug.print("BatchNorm forward mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+    try std.testing.expectEqualSlices(usize, input_shape, host_output.base.getShapeConst());
+
+    // **Check Running Mean**
+    // Expected: 0.1 * [2.5, 3.5, 4.5] = [0.25, 0.35, 0.45]
+    var host_running_mean = try running_mean.asUntagged(T).data.toHost(allocator, stream);
+    defer host_running_mean.deinit(allocator);
+    const expected_running_mean = [_]T{ 0.25, 0.35, 0.45 };
+    for (host_running_mean.data, expected_running_mean) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("Running mean mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+
+    // **Check Running Variance**
+    // Expected: 0.1 * [4.5, 4.5, 4.5] = [0.45, 0.45, 0.45]
+    // - var_biased = 2.25, adjust = N/(N-1) = 2/1 = 2, var_unbiased = 2 * 2.25 = 4.5
+    var host_running_variance = try running_variance.asUntagged(T).data.toHost(allocator, stream);
+    defer host_running_variance.deinit(allocator);
+    const expected_running_variance = [_]T{ 0.45, 0.45, 0.45 };
+    for (host_running_variance.data, expected_running_variance) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("Running variance mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+
+    // **Upstream Gradient for Backward Pass**
+    // Shape: (2, 3), all ones => [1, 1, 1, 1, 1, 1]
+    const gy_shape = &[_]usize{ 2, 3 };
+    var gy_data = [_]T{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    var gpu_gy = try GPUTensor(T).initAsync(gy_shape, stream);
+    defer gpu_gy.deinitAsync(stream);
+    try gpu_gy.writeFromHostAsync(&gy_data, 0, stream);
+    var var_gy = try chain.createVariable(T, gpu_gy.move(), "gy");
+    defer var_gy.destroy();
+    var_output.setGrad(var_gy);
+
+    // **Backward Pass**
+    try var_output.backwardEx(chain);
+
+    // **Retrieve Gradients**
+    var gpu_gx = var_input.refGrad().?.asUntagged(T).data;
+    var host_gx = try gpu_gx.toHost(allocator, stream);
+    defer host_gx.deinit(allocator);
+
+    var gpu_ggamma = var_gamma.refGrad().?.asUntagged(T).data;
+    var host_ggamma = try gpu_ggamma.toHost(allocator, stream);
+    defer host_ggamma.deinit(allocator);
+
+    var gpu_gbeta = var_beta.refGrad().?.asUntagged(T).data;
+    var host_gbeta = try gpu_gbeta.toHost(allocator, stream);
+    defer host_gbeta.deinit(allocator);
+
+    try stream.sync();
+
+    // **Check Gradient w.r.t. Beta**
+    // Expected: sum(gy, axis=0) = [2, 2, 2]
+    const expected_gbeta = [_]T{ 2.0, 2.0, 2.0 };
+    for (host_gbeta.data, expected_gbeta) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("gbeta mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+
+    // **Check Gradient w.r.t. Gamma**
+    // Expected: sum(x_normalized * gy, axis=0) = [-1*1 + 1*1, ...] = [0, 0, 0]
+    const expected_ggamma = [_]T{ 0.0, 0.0, 0.0 };
+    for (host_ggamma.data, expected_ggamma) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("ggamma mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+
+    // **Numerical Gradient Check for Input (x)**
+    const epsilon = 1e-4;
+    var numerical_gx = try allocator.alloc(T, input_data.len);
+    defer allocator.free(numerical_gx);
+
+    for (0..input_data.len) |i| {
+        // Perturb input positively
+        var input_plus = input_data;
+        input_plus[i] += epsilon;
+        var gpu_input_plus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_plus.writeFromHostAsync(&input_plus, 0, stream);
+        const var_input_plus = try chain.createVariable(T, gpu_input_plus.move(), "input_plus");
+        defer var_input_plus.destroy();
+        var var_out_plus = try batchNormEx(T, var_input_plus, var_gamma, var_beta, option, chain);
+        defer var_out_plus.destroy();
+        var host_out_plus = try var_out_plus.asUntagged(T).data.toHost(allocator, stream);
+        defer host_out_plus.deinit(allocator);
+
+        // Perturb input negatively
+        var input_minus = input_data;
+        input_minus[i] -= epsilon;
+        var gpu_input_minus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_minus.writeFromHostAsync(&input_minus, 0, stream);
+        const var_input_minus = try chain.createVariable(T, gpu_input_minus.move(), "input_minus");
+        defer var_input_minus.destroy();
+        var var_out_minus = try batchNormEx(T, var_input_minus, var_gamma, var_beta, option, chain);
+        defer var_out_minus.destroy();
+        var host_out_minus = try var_out_minus.asUntagged(T).data.toHost(allocator, stream);
+        defer host_out_minus.deinit(allocator);
+
+        // Compute numerical gradient
+        numerical_gx[i] = 0.0;
+        for (0..gy_data.len) |j| {
+            const diff = host_out_plus.data[j] - host_out_minus.data[j];
+            numerical_gx[i] += diff / (2.0 * epsilon) * gy_data[j];
+        }
+    }
+
+    // Compare analytical and numerical gradients for x
+    for (host_gx.data, numerical_gx) |analytical, numerical| {
+        if (@abs(analytical - numerical) > 1e-2) {
+            std.debug.print("gx mismatch: analytical={any}, numerical={any}\n", .{ analytical, numerical });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("BatchNorm forward and backward test for 2D input passed.\n", .{});
+}
+
 pub fn test1scalar3i1o() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -1470,6 +1966,8 @@ pub fn test1scalar3i1o() !void {
 
     // Test Deconv2d backward pass
     try testDeconv2dBackward(allocator, &stream, base_chain);
+
+    try testBatchNormForwardBackward2D(allocator, &stream, base_chain);
 
     std.debug.print("All Conv2d and Deconv2d tests passed in test1scalar3i1o.\n", .{});
 }
