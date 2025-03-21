@@ -968,7 +968,7 @@ fn example10() !void {
     const hidden_size: comptime_int = 10;
     // const lr = 1.0;
 
-    var model: tomorin.layer.MLP(F, 2) = try .init(&.{ hidden_size, 10 }, &context, base_chain);
+    var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 10 }, &context, base_chain);
     defer model.destroy();
 
     //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
@@ -978,8 +978,6 @@ fn example10() !void {
     const iter_chain = try context.createChain();
     defer iter_chain.destroy();
     context.current_chain = iter_chain;
-
-    try model.saveJsonStringField(allocator, "out.json");
 
     var timer = try std.time.Timer.start();
     for (0..max_epoch) |epoch| {
@@ -1019,6 +1017,8 @@ fn example10() !void {
             @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(std.time.ns_per_s)),
         });
     }
+
+    try model.saveJsonStringField(allocator, "out.json");
 
     try stream.sync();
     try model.loadJsonStringField(allocator, "out.json");
@@ -1082,5 +1082,5 @@ fn example10() !void {
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
     // try example4();
-    try example9();
+    try example10();
 }

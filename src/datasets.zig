@@ -88,7 +88,7 @@ pub fn SpiralDataset(comptime T: type) type {
             self: *Self,
             i: usize,
             batch_i: usize,
-            batch: std.meta.Tuple(&.{ *GPUTensor(T), *GPUTensor(T) }),
+            batch: [2]*GPUTensor(T),
             context: *Context,
         ) !void {
             const data, const tag = batch;
@@ -276,7 +276,7 @@ pub fn MNISTDataset(comptime T: type) type {
             self: *Self,
             i: usize,
             batch_i: usize,
-            batch: std.meta.Tuple(&.{ *GPUTensor(T), *GPUTensor(T) }),
+            batch: [2]*GPUTensor(T),
             context: *Context,
         ) !void {
             const data, const tag = batch;

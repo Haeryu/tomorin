@@ -6,6 +6,7 @@ const Chain = @import("chain.zig").Chain;
 const GPUTensor = tomo.tensor.GPUTensor;
 
 const dbg = @import("util.zig").debugPrintGpuTensor;
+const pow = @import("util.zig").pow;
 
 pub fn WeightDecay(comptime T: type) type {
     return struct {
@@ -476,8 +477,8 @@ pub fn Adam(comptime T: type) type {
             self.t += 1;
         }
         pub fn calclr(self: *const Self) T {
-            const fix1 = 1.0 - std.math.pow(T, self.hyper_params.beta1, @floatFromInt(self.t));
-            const fix2 = 1.0 - std.math.pow(T, self.hyper_params.beta2, @floatFromInt(self.t));
+            const fix1 = 1.0 - pow(T, self.hyper_params.beta1, @floatFromInt(self.t));
+            const fix2 = 1.0 - pow(T, self.hyper_params.beta2, @floatFromInt(self.t));
             return self.hyper_params.alpha * @sqrt(fix2) / fix1;
         }
 
@@ -518,8 +519,8 @@ pub fn Adam(comptime T: type) type {
             try v.add(&grad_sq, self.context.stream);
 
             // Compute bias correction factors
-            const fix1 = 1.0 - std.math.pow(T, self.hyper_params.beta1, @floatFromInt(self.t));
-            const fix2 = 1.0 - std.math.pow(T, self.hyper_params.beta2, @floatFromInt(self.t));
+            const fix1 = 1.0 - pow(T, self.hyper_params.beta1, @floatFromInt(self.t));
+            const fix2 = 1.0 - pow(T, self.hyper_params.beta2, @floatFromInt(self.t));
 
             // Compute bias-corrected estimates: m_hat and v_hat
             var m_hat = try m.cloneAsync(self.context.stream);

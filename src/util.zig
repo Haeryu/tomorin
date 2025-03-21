@@ -130,3 +130,11 @@ pub fn downloadFile(allocator: std.mem.Allocator, url: []const u8, file_path: []
     }
     std.debug.print("\nDone\n", .{});
 }
+
+pub fn pow(comptime T: type, x: T, y: T) T {
+    if (T == f32 or T == f64) {
+        return std.math.pow(T, x, y);
+    } else if (T == f16) {
+        return @floatCast(std.math.pow(f32, @floatCast(x), @floatCast(y)));
+    }
+}

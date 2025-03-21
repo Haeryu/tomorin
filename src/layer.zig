@@ -204,7 +204,10 @@ pub fn LayerDecorator(comptime Self: type) type {
             var file = try std.fs.cwd().openFile(sub_path, .{ .mode = .read_only });
             defer file.close();
 
-            const src = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+            var bufreader = std.io.bufferedReader(file.reader());
+            var reader = bufreader.reader();
+
+            const src = try reader.readAllAlloc(allocator, std.math.maxInt(usize));
             defer allocator.free(src);
 
             try self.readJsonStringField(allocator, src);
