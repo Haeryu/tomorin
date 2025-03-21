@@ -1434,7 +1434,7 @@ fn testDeconv2dBackward(allocator: std.mem.Allocator, stream: *Stream, chain: *C
 }
 
 pub fn test1scalar3i1o() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

@@ -421,7 +421,7 @@ fn testLinearBackward(allocator: std.mem.Allocator) !void {
 
 // Combined test function
 pub fn test3i1o() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

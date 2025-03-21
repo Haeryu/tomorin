@@ -884,7 +884,7 @@ fn testSoftmaxBackwardPass(allocator: std.mem.Allocator) !void {
 }
 
 pub fn test1slice1i1o() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

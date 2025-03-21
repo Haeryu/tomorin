@@ -390,7 +390,7 @@ fn testsoftmaxCrossEntropyBackward(allocator: std.mem.Allocator) !void {
 }
 
 pub fn test1tensor1slice1i1o() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     try testsoftmaxCrossEntropyforward(allocator);

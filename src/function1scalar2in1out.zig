@@ -1406,7 +1406,7 @@ fn testDeconv2dNoBiasBackward(allocator: std.mem.Allocator, stream: *Stream, cha
 
 /// Master test function that runs all four tests for Conv2DNoBias/Deconv2DNoBias.
 pub fn test1scalar2i1o() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
