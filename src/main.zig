@@ -867,10 +867,10 @@ fn example9() !void {
     const t = try base_chain.createVariable(F, tv.move(), "t");
 
     const max_epoch = 10;
-    const hidden_size: comptime_int = 1000;
+    const hidden_size: comptime_int = 100;
     // const lr = 1.0;
 
-    var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 10 }, &context, base_chain);
+    var model: tomorin.layer.MLP(F, 7) = try .init(&(.{hidden_size} ** 6 ++ .{10}), .he_normal, &context, base_chain);
     defer model.destroy();
 
     //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
@@ -907,6 +907,12 @@ fn example9() !void {
             sum_loss += host_loss.at(&.{ 0, 0 }).*;
             sum_acc += acc;
             iter_chain.clear();
+
+            // std.debug.print("epoch {} loss {d} acc {d}\n", .{
+            //     epoch + 1,
+            //     host_loss.at(&.{ 0, 0 }).*,
+            //     acc,
+            // });
         }
 
         const len: F = @floatFromInt(data_loader.max_iter);
@@ -968,7 +974,7 @@ fn example10() !void {
     const hidden_size: comptime_int = 10;
     // const lr = 1.0;
 
-    var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 10 }, &context, base_chain);
+    var model: tomorin.layer.MLP(F, 3) = try .init(&.{ hidden_size, hidden_size, 10 }, .he_normal, &context, base_chain);
     defer model.destroy();
 
     //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
@@ -1082,5 +1088,6 @@ fn example10() !void {
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
     // try example4();
-    try example10();
+    // try example9();
+    try function.testFunctions();
 }

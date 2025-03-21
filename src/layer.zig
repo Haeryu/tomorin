@@ -236,6 +236,13 @@ pub fn Linear(comptime T: type) type {
         out_size: usize,
         context: *Context,
         base_chain: *Chain,
+        winit: WInit,
+
+        pub const WInit = enum {
+            xavier,
+            he_normal,
+            he_uniform,
+        };
 
         const Self = @This();
 
@@ -243,6 +250,7 @@ pub fn Linear(comptime T: type) type {
             in_size: ?usize,
             out_size: usize,
             no_bias: bool,
+            winit: WInit,
             context: *Context,
             base_chain: *Chain,
         ) !Self {
@@ -262,16 +270,22 @@ pub fn Linear(comptime T: type) type {
                 .out_size = out_size,
                 .context = context,
                 .base_chain = base_chain,
+                .winit = winit,
             };
         }
 
-        fn initW(
-            self: *Self,
-        ) !*TaggedVar {
+        fn initW(self: *Self) !*TaggedVar {
             var w_tensor: GPUTensor(T) = try .initAsync(&.{ self.in_size.?, self.out_size }, self.context.stream);
             errdefer w_tensor.deinitAsync(self.context.stream);
-            try w_tensor.fillNormalDistribution(0.0, 1.0, self.context.cuda_context, self.context.stream);
-            try w_tensor.scale(1.0 / @as(T, @floatFromInt(self.in_size.?)), self.context.stream);
+            // try w_tensor.fillNormalDistribution(0.0, 1.0, self.context.cuda_context, self.context.stream);
+            // try w_tensor.scale(1.0 / @as(T, @floatFromInt(self.in_size.?)), self.context.stream);
+
+            switch (self.winit) {
+                .xavier => try w_tensor.fillXavierUniform(self.context.cuda_context, self.context.stream),
+                .he_normal => try w_tensor.fillHeNormal(self.context.cuda_context, self.context.stream),
+                .he_uniform => try w_tensor.fillHeUniform(self.context.cuda_context, self.context.stream),
+            }
+
             const w = try self.base_chain.createVariable(T, w_tensor.move(), "w");
             return w;
         }
@@ -331,6 +345,7 @@ pub fn MLP(
 
         pub fn init(
             out_sizes: *const [layers_count]usize,
+            winit: Linear(T).WInit,
             context: *Context,
             chain: *Chain,
         ) !Self {
@@ -345,6 +360,7 @@ pub fn MLP(
                     null,
                     out_sizes[i],
                     false,
+                    winit,
                     context,
                     chain,
                 );

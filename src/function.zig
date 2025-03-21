@@ -105,6 +105,8 @@ pub usingnamespace @import("function2slice1in1out.zig");
 pub usingnamespace @import("function2in1out.zig");
 pub usingnamespace @import("function1scalar1in1out.zig");
 pub usingnamespace @import("function2scalar1in1out.zig");
+pub usingnamespace @import("function1scalar2in1out.zig");
+pub usingnamespace @import("function1scalar3in1out.zig");
 pub usingnamespace @import("function3in1out.zig");
 pub usingnamespace @import("function1tensor1slice1in1out.zig");
 
@@ -471,4 +473,6 @@ pub fn testFunctions() !void {
     try @This().test2i1o();
     try @This().test2Scalar1i1o();
     try @This().test3i1o();
+    try @This().test1scalar2i1o();
+    try @This().test1scalar3i1o();
 }

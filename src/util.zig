@@ -44,7 +44,7 @@ pub fn accuracy(comptime T: type, y: *TaggedVar, t: *TaggedVar) !T {
     var target = try t.asUntagged(T).data.argmax(context.allocator, &.{1}, false, context.stream);
     defer target.deinitAsync(context.stream);
 
-    try pred.equal(&target, context.stream); // Use equal instead of equalApprox
+    try pred.equal(&target, context.stream);
 
     var acc = try pred.meanInt(T, context.allocator, null, false, context.stream);
     defer acc.deinitAsync(context.stream);
@@ -53,6 +53,10 @@ pub fn accuracy(comptime T: type, y: *TaggedVar, t: *TaggedVar) !T {
     defer acc_host.deinit(context.allocator);
 
     return acc_host.at(&.{0}).*;
+}
+
+pub fn getDeconvOutsize(size: usize, k: usize, s: usize, p: usize) usize {
+    return s * (size - 1) + k - 2 * p;
 }
 
 // pub fn accuracy(comptime T: type, y: *TaggedVar, t: *TaggedVar, num_classes: usize) !T {
