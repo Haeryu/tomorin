@@ -460,29 +460,38 @@ pub fn Conv2D(comptime T: type) type {
 
         pub fn forward(self: *Self, x: *const GPUTensor(T), w: *const GPUTensor(T), b: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            const k_shape = w.base.getShapeConst();
-            const kh = k_shape[2];
-            const kw = k_shape[3];
+            const w_shape = w.base.getShapeConst();
+            const oc = w_shape[0];
+            const ic = w_shape[1];
+            const kh = w_shape[2];
+            const kw = w_shape[3];
 
-            var col =
-                try x.im2col(.{ kh, kw }, self.scalar.stride, self.scalar.padding, self.scalar.dilation, context.stream);
+            const sy, const sx = self.scalar.stride;
+            const ph, const pw = self.scalar.padding;
+            const dy, const dx = self.scalar.dilation;
+
+            var col = try x.im2col(
+                .{ kh, kw },
+                .{ sy, sx },
+                .{ ph, pw },
+                .{ dy, dx },
+                context.stream,
+            );
             defer col.deinitAsync(context.stream);
 
-            // std.debug.print("col shape: {any}\n", .{col.base.getShapeConst()});
-            // std.debug.print("w shape: {any}\n", .{w.base.getShapeConst()});
-            var w_reshaped = try w.reshape(&.{ k_shape[0], k_shape[1] * kh * kw }, context.stream); // {1, 4}
+            var w_reshaped = try w.reshape(&.{ oc, ic * kh * kw }, context.stream);
             defer w_reshaped.deinitAsync(context.stream);
 
             var y = try col.tensordot(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
             defer y.deinitAsync(context.stream);
 
-            var b_broad = try b.broadcastTo(y.base.getShapeConst(), context.stream);
-            defer b_broad.deinitAsync(context.stream);
-
-            try y.add(&b_broad, context.stream);
-
             var y_roll = try y.rollaxis(3, 1, context.stream);
             errdefer y_roll.deinitAsync(context.stream);
+
+            var b_broad = try b.broadcastTo(y_roll.base.getShapeConst(), context.stream);
+            defer b_broad.deinitAsync(context.stream);
+
+            try y_roll.add(&b_broad, context.stream);
 
             return y_roll.move();
         }
@@ -564,29 +573,29 @@ pub fn Deconv2D(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T), weight: *const GPUTensor(T), b: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
 
-            const sh, const sw = self.scalar.stride;
-            const ph, const pw = self.scalar.padding;
             const w_shape = weight.base.getShapeConst();
-            //  const c = w_shape[0];
-            const oc = w_shape[1];
+            const ic = w_shape[1];
             const kh = w_shape[2];
             const kw = w_shape[3];
+
             const x_shape = x.base.getShapeConst();
             const n = x_shape[0];
-            // const c = x_shape[1];
             const h = x_shape[2];
             const w = x_shape[3];
 
+            const sy, const sx = self.scalar.stride;
+            const ph, const pw = self.scalar.padding;
+            const dy, const dx = self.scalar.dilation;
+
             if (self.scalar.outsize == null) {
                 self.scalar.outsize = .{
-                    getDeconvOutsize(h, kh, sh, ph),
-                    getDeconvOutsize(w, kw, sw, pw),
+                    getDeconvOutsize(h, kh, sy, ph),
+                    getDeconvOutsize(w, kw, sx, pw),
                 };
             }
-
             const out_h, const out_w = self.scalar.outsize.?;
 
-            const img_shape: [4]usize = .{ n, oc, out_h, out_w };
+            const img_shape: [4]usize = .{ n, ic, out_h, out_w };
 
             var gcol = try weight.tensordot(x, context.allocator, &.{0}, &.{1}, context.stream);
             defer gcol.deinitAsync(context.stream);
@@ -594,14 +603,12 @@ pub fn Deconv2D(comptime T: type) type {
             var gcol_roll = try gcol.rollaxis(3, 0, context.stream);
             defer gcol_roll.deinitAsync(context.stream);
 
-            var y = try gcol_roll.col2im(
-                &img_shape,
-                .{ kh, kw },
-                self.scalar.stride,
-                self.scalar.padding,
-                self.scalar.dilation,
-                context.stream,
-            );
+            // Reshape to 2D for col2im
+            const flat_shape = &.{ n * h * w, ic * kh * kw };
+            var gcol_flat = try gcol_roll.reshape(flat_shape, context.stream);
+            defer gcol_flat.deinitAsync(context.stream);
+
+            var y = try gcol_flat.col2im(&img_shape, .{ kh, kw }, .{ sy, sx }, .{ ph, pw }, .{ dy, dx }, context.stream);
             errdefer y.deinitAsync(context.stream);
 
             var b_reshaped = try b.reshape(&.{ 1, b.calcLen(), 1, 1 }, context.stream);

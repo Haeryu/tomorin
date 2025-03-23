@@ -1085,9 +1085,122 @@ fn example10() !void {
     }
 }
 
+fn example11() !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    var stream: tomo.stream.Stream = try .create();
+    defer stream.destroy();
+
+    var cuda_context: tomo.cuda_context.CudaContext = try .init();
+    defer cuda_context.deinit();
+
+    var context: tomorin.context.Context = try .init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 100,
+        .init_var_capacity = 100,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    defer base_chain.destroy();
+    context.current_chain = base_chain;
+
+    var cifar10: tomorin.datasets.CIFAR10Dataset(F) = try .init(allocator, true);
+    defer cifar10.deinit();
+
+    var data_loader: tomorin.dataloader.DataLoader(@TypeOf(cifar10)) = try .init(
+        allocator,
+        &cifar10,
+        1,
+        true,
+        &context,
+    );
+    defer data_loader.deinit();
+
+    var xv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{
+        data_loader.batch_size,
+        3,
+        tomorin.datasets.CIFAR10Dataset(F).out_width,
+        tomorin.datasets.CIFAR10Dataset(F).out_height,
+    }, &stream);
+    defer xv.deinitAsync(&stream);
+
+    var tv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{
+        data_loader.batch_size,
+        tomorin.datasets.CIFAR10Dataset(F).num_classes,
+    }, &stream);
+    defer tv.deinitAsync(&stream);
+
+    const x = try base_chain.createVariable(F, xv.move(), "x");
+    const t = try base_chain.createVariable(F, tv.move(), "t");
+
+    const max_epoch = 10;
+    // const lr = 1.0;
+
+    var model: tomorin.layer.VGG16(F) = try .init(&context, base_chain);
+    defer model.destroy();
+
+    //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
+    var optimizer: tomorin.optimizer.AdamW(F) = try .init(.default, &context);
+    defer optimizer.deinit();
+
+    const iter_chain = try context.createChain();
+    defer iter_chain.destroy();
+    context.current_chain = iter_chain;
+
+    var timer = try std.time.Timer.start();
+    for (0..max_epoch) |epoch| {
+        var sum_loss: F = 0.0;
+        var sum_acc: F = 0.0;
+        timer.reset();
+
+        while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| {
+            const y = try model.forward(x, true, iter_chain);
+
+            const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
+
+            const acc = try tomorin.util.accuracy(F, y, t);
+
+            x.clearGrad();
+            t.clearGrad();
+            model.clearGrads();
+            try loss.backwardEx(iter_chain);
+
+            try optimizer.update(&model.getParams());
+
+            var host_loss = try loss.asUntagged(F).data.toHost(allocator, &stream);
+            defer host_loss.deinit(allocator);
+
+            try stream.sync();
+            sum_loss += host_loss.at(&.{ 0, 0 }).*;
+            sum_acc += acc;
+
+            iter_chain.clear();
+
+            // std.debug.print("epoch {} loss {d} acc {d}\n", .{
+            //     epoch + 1,
+            //     host_loss.at(&.{ 0, 0 }).*,
+            //     acc,
+            // });
+        }
+
+        const len: F = @floatFromInt(data_loader.max_iter);
+        const elapsed = timer.lap();
+
+        std.debug.print("epoch {} avg loss {d} acc {d} elapsed {d}\n", .{
+            epoch + 1,
+            sum_loss / len,
+            sum_acc / len,
+            @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(std.time.ns_per_s)),
+        });
+    }
+}
+
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
     // try example4();
-    // try example9();
-    try function.testFunctions();
+    try example11();
+    // try function.testFunctions();
 }

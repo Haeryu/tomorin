@@ -257,7 +257,7 @@ pub fn Dropout(comptime T: type) type {
                 errdefer y.deinitAsync(context.stream);
 
                 if (self.mask == null) {
-                    var mask: GPUTensor(T) = try .initAsync(x.base.getShape(), context.stream);
+                    var mask: GPUTensor(T) = try .initAsync(x.base.getShapeConst(), context.stream);
                     errdefer mask.deinitAsync(context.stream);
 
                     self.mask = try self.base.chain.createVariable(T, mask.move(), null);

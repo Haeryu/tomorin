@@ -9,6 +9,11 @@ const function = @import("function.zig");
 const linearEx = function.linearEx;
 const broadcastToEx = function.broadcastToEx;
 const matmulEx = function.matmulEx;
+const conv2DEx = function.conv2DEx;
+const reluEx = function.reluEx;
+const maxPoolingEx = function.maxPoolingEx;
+const reshapeEx = function.reshapeEx;
+const dropoutEx = function.dropoutEx;
 
 pub fn LayerFieldsFactory(
     comptime param_names: []const [:0]const u8,
@@ -23,7 +28,7 @@ pub fn LayerFieldsFactory(
             .type = ?*TaggedVar,
             .default_value_ptr = null,
             .is_comptime = false,
-            .alignment = @alignOf(*TaggedVar),
+            .alignment = @alignOf(?*TaggedVar),
         };
         i += 1;
     }
@@ -235,7 +240,7 @@ pub fn Linear(comptime T: type) type {
         in_size: ?usize,
         out_size: usize,
         context: *Context,
-        base_chain: *Chain,
+        chain: *Chain,
         winit: WInit,
 
         pub const WInit = enum {
@@ -252,16 +257,16 @@ pub fn Linear(comptime T: type) type {
             no_bias: bool,
             winit: WInit,
             context: *Context,
-            base_chain: *Chain,
+            chain: *Chain,
         ) !Self {
             const b = if (no_bias) null else blk: {
                 var b_tensor: GPUTensor(T) = try .initAsync(&.{ 1, out_size }, context.stream);
                 errdefer b_tensor.deinitAsync(context.stream);
                 try b_tensor.fill(0.0, context.stream);
-                break :blk try base_chain.createVariable(T, b_tensor.move(), "b");
+                break :blk try chain.createVariable(T, b_tensor.move(), "b");
             };
 
-            return .{
+            var self: Self = .{
                 .fields = .{
                     .w = null,
                     .b = b,
@@ -269,9 +274,16 @@ pub fn Linear(comptime T: type) type {
                 .in_size = in_size,
                 .out_size = out_size,
                 .context = context,
-                .base_chain = base_chain,
+                .chain = chain,
                 .winit = winit,
             };
+            errdefer self.destroy();
+
+            if (in_size != null) {
+                self.fields.w = try self.initW();
+            }
+
+            return self;
         }
 
         fn initW(self: *Self) !*TaggedVar {
@@ -286,7 +298,7 @@ pub fn Linear(comptime T: type) type {
                 .he_uniform => try w_tensor.fillHeUniform(self.context.cuda_context, self.context.stream),
             }
 
-            const w = try self.base_chain.createVariable(T, w_tensor.move(), "w");
+            const w = try self.chain.createVariable(T, w_tensor.move(), "w");
             return w;
         }
 
@@ -381,6 +393,427 @@ pub fn MLP(
                 y = try activation(T, y, chain);
             }
             return try @field(self.fields, std.fmt.comptimePrint("l{}", .{layers_count - 1})).forward(y, chain);
+        }
+    };
+}
+
+pub fn Conv2d(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{
+                "w",
+                "b",
+            },
+            &.{},
+        ),
+        in_channels: ?usize,
+        out_channels: usize,
+        kernel_size: [2]usize,
+        stride: [2]usize,
+        padding: [2]usize,
+        dilation: [2]usize,
+        winit: WInit,
+        context: *Context,
+        chain: *Chain,
+
+        const Self = @This();
+
+        pub const WInit = enum {
+            xavier,
+            he_normal,
+            he_uniform,
+        };
+
+        pub fn init(
+            in_channels: ?usize,
+            out_channels: usize,
+            kernel_size: [2]usize,
+            stride: [2]usize,
+            padding: [2]usize,
+            dilation: [2]usize,
+            no_bias: bool,
+            winit: WInit,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            const b = if (no_bias) null else blk: {
+                var b_tensor: GPUTensor(T) = try .initAsync(&.{ 1, out_channels, 1, 1 }, context.stream);
+                errdefer b_tensor.deinitAsync(context.stream);
+                try b_tensor.fill(0.0, context.stream);
+                break :blk try chain.createVariable(T, b_tensor.move(), "b");
+            };
+
+            var self: Self = .{
+                .fields = .{
+                    .w = null,
+                    .b = b,
+                },
+                .in_channels = in_channels,
+                .out_channels = out_channels,
+                .kernel_size = kernel_size,
+                .stride = stride,
+                .padding = padding,
+                .dilation = dilation,
+                .context = context,
+                .winit = winit,
+                .chain = chain,
+            };
+            errdefer self.destroy();
+
+            if (in_channels != null) {
+                self.fields.w = try self.initW();
+            }
+
+            return self;
+        }
+
+        pub fn initW(self: *Self) !*TaggedVar {
+            const c = self.in_channels.?;
+            const oc = self.out_channels;
+            const kh, const kw = self.kernel_size;
+            const scale = std.math.sqrt(1.0 / @as(T, @floatFromInt(c * kh * kw)));
+
+            var w: GPUTensor(T) = try .initAsync(
+                &.{ oc, c, kh, kw },
+                self.context.stream,
+            );
+            errdefer w.deinitAsync(self.context.stream);
+
+            switch (self.winit) {
+                .he_normal => try w.fillHeNormal(self.context.cuda_context, self.context.stream),
+                .he_uniform => try w.fillHeUniform(self.context.cuda_context, self.context.stream),
+                .xavier => try w.fillXavierUniform(self.context.cuda_context, self.context.stream),
+            }
+
+            try w.scale(scale, self.context.stream);
+
+            return try self.chain.createVariable(T, w.move(), "w");
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+            if (self.fields.w == null) {
+                self.in_channels = x.getShape()[1];
+                self.fields.w = try self.initW();
+            }
+
+            return try conv2DEx(
+                T,
+                x,
+                self.fields.w.?,
+                self.fields.b.?,
+                .{
+                    .dilation = self.dilation,
+                    .padding = self.padding,
+                    .stride = self.stride,
+                },
+                chain,
+            );
+        }
+    };
+}
+
+pub fn VGG16(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{},
+            &.{
+                .{ "conv1_1", Conv2d(T) },
+                .{ "conv1_2", Conv2d(T) },
+                .{ "conv2_1", Conv2d(T) },
+                .{ "conv2_2", Conv2d(T) },
+                .{ "conv3_1", Conv2d(T) },
+                .{ "conv3_2", Conv2d(T) },
+                .{ "conv3_3", Conv2d(T) },
+                .{ "conv4_1", Conv2d(T) },
+                .{ "conv4_2", Conv2d(T) },
+                .{ "conv4_3", Conv2d(T) },
+                .{ "conv5_1", Conv2d(T) },
+                .{ "conv5_2", Conv2d(T) },
+                .{ "conv5_3", Conv2d(T) },
+                .{ "fc6", Linear(T) },
+                .{ "fc7", Linear(T) },
+                .{ "fc8", Linear(T) },
+            },
+        ),
+
+        const Self = @This();
+
+        pub fn init(context: *Context, chain: *Chain) !Self {
+            var conv1_1: Conv2d(T) = try .init(
+                null,
+                64,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv1_1.destroy();
+            var conv1_2: Conv2d(T) = try .init(
+                null,
+                64,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv1_2.destroy();
+            var conv2_1: Conv2d(T) = try .init(
+                null,
+                128,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv2_1.destroy();
+            var conv2_2: Conv2d(T) = try .init(
+                null,
+                128,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv2_2.destroy();
+            var conv3_1: Conv2d(T) = try .init(
+                null,
+                256,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv3_1.destroy();
+            var conv3_2: Conv2d(T) = try .init(
+                null,
+                256,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv3_2.destroy();
+            var conv3_3: Conv2d(T) = try .init(
+                null,
+                256,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv3_3.destroy();
+            var conv4_1: Conv2d(T) = try .init(
+                null,
+                512,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv4_1.destroy();
+            var conv4_2: Conv2d(T) = try .init(
+                null,
+                512,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv4_2.destroy();
+            var conv4_3: Conv2d(T) = try .init(
+                null,
+                512,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv4_3.destroy();
+            var conv5_1: Conv2d(T) = try .init(
+                null,
+                512,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv5_1.destroy();
+            var conv5_2: Conv2d(T) = try .init(
+                null,
+                512,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv5_2.destroy();
+            var conv5_3: Conv2d(T) = try .init(
+                null,
+                512,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv5_3.destroy();
+            var fc6: Linear(T) = try .init(
+                null,
+                // 4096,
+                512,
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer fc6.destroy();
+            var fc7: Linear(T) = try .init(
+                null,
+                // 4096,
+                512,
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer fc7.destroy();
+            var fc8: Linear(T) = try .init(
+                null,
+                // 1000,
+                10,
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer fc8.destroy();
+
+            return .{
+                .fields = .{
+                    .conv1_1 = conv1_1,
+                    .conv1_2 = conv1_2,
+                    .conv2_1 = conv2_1,
+                    .conv2_2 = conv2_2,
+                    .conv3_1 = conv3_1,
+                    .conv3_2 = conv3_2,
+                    .conv3_3 = conv3_3,
+                    .conv4_1 = conv4_1,
+                    .conv4_2 = conv4_2,
+                    .conv4_3 = conv4_3,
+                    .conv5_1 = conv5_1,
+                    .conv5_2 = conv5_2,
+                    .conv5_3 = conv5_3,
+                    .fc6 = fc6,
+                    .fc7 = fc7,
+                    .fc8 = fc8,
+                },
+            };
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, train: bool, chain: *Chain) !*TaggedVar {
+            var y = try reluEx(T, try self.fields.conv1_1.forward(x, chain), chain);
+            y = try reluEx(T, try self.fields.conv1_2.forward(y, chain), chain);
+            y = try maxPoolingEx(T, y, .{
+                .kernel_size = .{ 2, 2 },
+                .padding = .{ 2, 2 },
+                .stride = .{ 2, 2 },
+            }, chain);
+
+            y = try reluEx(T, try self.fields.conv2_1.forward(y, chain), chain);
+            y = try reluEx(T, try self.fields.conv2_2.forward(y, chain), chain);
+            y = try maxPoolingEx(T, y, .{
+                .kernel_size = .{ 2, 2 },
+                .padding = .{ 2, 2 },
+                .stride = .{ 2, 2 },
+            }, chain);
+
+            y = try reluEx(T, try self.fields.conv3_1.forward(y, chain), chain);
+            y = try reluEx(T, try self.fields.conv3_2.forward(y, chain), chain);
+            y = try reluEx(T, try self.fields.conv3_3.forward(y, chain), chain);
+            y = try maxPoolingEx(T, y, .{
+                .kernel_size = .{ 2, 2 },
+                .padding = .{ 2, 2 },
+                .stride = .{ 2, 2 },
+            }, chain);
+
+            y = try reluEx(T, try self.fields.conv4_1.forward(y, chain), chain);
+            y = try reluEx(T, try self.fields.conv4_2.forward(y, chain), chain);
+            y = try reluEx(T, try self.fields.conv4_3.forward(y, chain), chain);
+            y = try maxPoolingEx(T, y, .{
+                .kernel_size = .{ 2, 2 },
+                .padding = .{ 2, 2 },
+                .stride = .{ 2, 2 },
+            }, chain);
+
+            y = try reluEx(T, try self.fields.conv5_1.forward(y, chain), chain);
+            y = try reluEx(T, try self.fields.conv5_2.forward(y, chain), chain);
+            y = try reluEx(T, try self.fields.conv5_3.forward(y, chain), chain);
+            y = try maxPoolingEx(T, y, .{
+                .kernel_size = .{ 2, 2 },
+                .padding = .{ 2, 2 },
+                .stride = .{ 2, 2 },
+            }, chain);
+
+            y = try reshapeEx(T, y, &.{ y.getShape()[0], y.getShape()[1] * y.getShape()[2] * y.getShape()[3] }, chain);
+
+            y = try dropoutEx(T, try reluEx(T, try self.fields.fc6.forward(y, chain), chain), 0.5, train, chain);
+            y = try dropoutEx(T, try reluEx(T, try self.fields.fc7.forward(y, chain), chain), 0.5, train, chain);
+            y = try self.fields.fc8.forward(y, chain);
+
+            return y;
         }
     };
 }

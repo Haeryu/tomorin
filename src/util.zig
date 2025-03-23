@@ -38,21 +38,21 @@ pub fn arangeAlloc(allocator: std.mem.Allocator, comptime T: type, start: T, sto
 
 pub fn accuracy(comptime T: type, y: *TaggedVar, t: *TaggedVar) !T {
     const context = y.getContext();
-    var pred = try y.asUntagged(T).data.argmax(context.allocator, &.{1}, false, context.stream);
+    var pred = try y.asUntagged(T).data.argmax(context.allocator, &.{1}, true, context.stream);
     defer pred.deinitAsync(context.stream);
 
-    var target = try t.asUntagged(T).data.argmax(context.allocator, &.{1}, false, context.stream);
+    var target = try t.asUntagged(T).data.argmax(context.allocator, &.{1}, true, context.stream);
     defer target.deinitAsync(context.stream);
 
     try pred.equal(&target, context.stream);
 
-    var acc = try pred.meanInt(T, context.allocator, null, false, context.stream);
+    var acc = try pred.meanInt(T, context.allocator, null, true, context.stream);
     defer acc.deinitAsync(context.stream);
 
     var acc_host = try acc.toHost(context.allocator, context.stream);
     defer acc_host.deinit(context.allocator);
 
-    return acc_host.at(&.{0}).*;
+    return acc_host.data[0];
 }
 
 pub fn getDeconvOutsize(size: usize, k: usize, s: usize, p: usize) usize {
