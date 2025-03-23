@@ -122,12 +122,12 @@ pub fn Reshape(comptime T: type) type {
             const context = self.base.context;
             self.old_shape = x.base.getShapeConst();
 
-            var y = try GPUTensor(T).initAsync(self.slice, context.stream);
+            var y = try x.cloneAsync(context.stream);
             errdefer y.deinitAsync(context.stream);
 
-            try y.writeAsync(x.ptr.?, x.calcLen(), 0, context.stream);
+            try y.reshape(self.slice);
 
-            return y;
+            return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {

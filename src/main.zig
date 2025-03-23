@@ -1110,10 +1110,12 @@ fn example11() !void {
     var cifar10: tomorin.datasets.CIFAR10Dataset(F) = try .init(allocator, true);
     defer cifar10.deinit();
 
+    //std.debug.print("{}", .{cifar10.total_records});
+
     var data_loader: tomorin.dataloader.DataLoader(@TypeOf(cifar10)) = try .init(
         allocator,
         &cifar10,
-        1,
+        400,
         true,
         &context,
     );
@@ -1136,10 +1138,10 @@ fn example11() !void {
     const x = try base_chain.createVariable(F, xv.move(), "x");
     const t = try base_chain.createVariable(F, tv.move(), "t");
 
-    const max_epoch = 10;
+    const max_epoch = 1000;
     // const lr = 1.0;
 
-    var model: tomorin.layer.VGG16(F) = try .init(&context, base_chain);
+    var model: tomorin.layer.VGG16(F) = try .init(10, &context, base_chain);
     defer model.destroy();
 
     //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
@@ -1156,8 +1158,18 @@ fn example11() !void {
         var sum_acc: F = 0.0;
         timer.reset();
 
-        while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| {
+        var i: usize = 0;
+        while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| : (i += 1) {
             const y = try model.forward(x, true, iter_chain);
+
+            //  std.debug.print("{any} {any}\n", .{ y.getShape(), t.getShape() });
+
+            // if (i == 3) {
+            //     // try dbg(F, &model.fields.conv4_1.fields.w.?.asUntaggedConst(F).data, &context);
+            // }
+
+            // try dbg(F, &t.asUntaggedConst(F).data, t.getContext());
+            // try dbg(F, &y.asUntaggedConst(F).data, y.getContext());
 
             const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
 
@@ -1166,6 +1178,7 @@ fn example11() !void {
             x.clearGrad();
             t.clearGrad();
             model.clearGrads();
+
             try loss.backwardEx(iter_chain);
 
             try optimizer.update(&model.getParams());
@@ -1178,6 +1191,17 @@ fn example11() !void {
             sum_acc += acc;
 
             iter_chain.clear();
+            try stream.sync();
+
+            std.debug.print("epoch {} loss {d} acc {d}\n", .{
+                epoch + 1,
+                host_loss.at(&.{ 0, 0 }).*,
+                acc,
+            });
+
+            // if (i == 0) {
+            //     try dbg(F, &model.fields.out.fields.w.?.asUntaggedConst(F).data, &context);
+            // }
 
             // std.debug.print("epoch {} loss {d} acc {d}\n", .{
             //     epoch + 1,
@@ -1196,11 +1220,15 @@ fn example11() !void {
             @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(std.time.ns_per_s)),
         });
     }
+    try stream.sync();
+
+    try model.saveJsonStringField(allocator, "vgg16_out.json");
 }
 
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
     // try example4();
+    // try example9();
     try example11();
     // try function.testFunctions();
 }

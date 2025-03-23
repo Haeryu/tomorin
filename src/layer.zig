@@ -15,6 +15,8 @@ const maxPoolingEx = function.maxPoolingEx;
 const reshapeEx = function.reshapeEx;
 const dropoutEx = function.dropoutEx;
 
+const dbg = @import("util.zig").debugPrintGpuTensor;
+
 pub fn LayerFieldsFactory(
     comptime param_names: []const [:0]const u8,
     comptime layer_names_types: []const std.meta.Tuple(&.{ [:0]const u8, type }),
@@ -472,7 +474,6 @@ pub fn Conv2d(comptime T: type) type {
             const c = self.in_channels.?;
             const oc = self.out_channels;
             const kh, const kw = self.kernel_size;
-            const scale = std.math.sqrt(1.0 / @as(T, @floatFromInt(c * kh * kw)));
 
             var w: GPUTensor(T) = try .initAsync(
                 &.{ oc, c, kh, kw },
@@ -485,8 +486,6 @@ pub fn Conv2d(comptime T: type) type {
                 .he_uniform => try w.fillHeUniform(self.context.cuda_context, self.context.stream),
                 .xavier => try w.fillXavierUniform(self.context.cuda_context, self.context.stream),
             }
-
-            try w.scale(scale, self.context.stream);
 
             return try self.chain.createVariable(T, w.move(), "w");
         }
@@ -535,12 +534,13 @@ pub fn VGG16(comptime T: type) type {
                 .{ "fc6", Linear(T) },
                 .{ "fc7", Linear(T) },
                 .{ "fc8", Linear(T) },
+                .{ "out", Linear(T) },
             },
         ),
 
         const Self = @This();
 
-        pub fn init(context: *Context, chain: *Chain) !Self {
+        pub fn init(out_size: usize, context: *Context, chain: *Chain) !Self {
             var conv1_1: Conv2d(T) = try .init(
                 null,
                 64,
@@ -712,7 +712,7 @@ pub fn VGG16(comptime T: type) type {
             errdefer conv5_3.destroy();
             var fc6: Linear(T) = try .init(
                 null,
-                // 4096,
+                //4096,
                 512,
                 false,
                 .he_normal,
@@ -722,7 +722,7 @@ pub fn VGG16(comptime T: type) type {
             errdefer fc6.destroy();
             var fc7: Linear(T) = try .init(
                 null,
-                // 4096,
+                //4096,
                 512,
                 false,
                 .he_normal,
@@ -733,13 +733,22 @@ pub fn VGG16(comptime T: type) type {
             var fc8: Linear(T) = try .init(
                 null,
                 // 1000,
-                10,
+                100,
                 false,
                 .he_normal,
                 context,
                 chain,
             );
             errdefer fc8.destroy();
+            var out: Linear(T) = try .init(
+                null,
+                out_size,
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer out.destroy();
 
             return .{
                 .fields = .{
@@ -759,6 +768,7 @@ pub fn VGG16(comptime T: type) type {
                     .fc6 = fc6,
                     .fc7 = fc7,
                     .fc8 = fc8,
+                    .out = out,
                 },
             };
         }
@@ -768,7 +778,7 @@ pub fn VGG16(comptime T: type) type {
             y = try reluEx(T, try self.fields.conv1_2.forward(y, chain), chain);
             y = try maxPoolingEx(T, y, .{
                 .kernel_size = .{ 2, 2 },
-                .padding = .{ 2, 2 },
+                .padding = .{ 0, 0 },
                 .stride = .{ 2, 2 },
             }, chain);
 
@@ -776,7 +786,7 @@ pub fn VGG16(comptime T: type) type {
             y = try reluEx(T, try self.fields.conv2_2.forward(y, chain), chain);
             y = try maxPoolingEx(T, y, .{
                 .kernel_size = .{ 2, 2 },
-                .padding = .{ 2, 2 },
+                .padding = .{ 0, 0 },
                 .stride = .{ 2, 2 },
             }, chain);
 
@@ -785,7 +795,7 @@ pub fn VGG16(comptime T: type) type {
             y = try reluEx(T, try self.fields.conv3_3.forward(y, chain), chain);
             y = try maxPoolingEx(T, y, .{
                 .kernel_size = .{ 2, 2 },
-                .padding = .{ 2, 2 },
+                .padding = .{ 0, 0 },
                 .stride = .{ 2, 2 },
             }, chain);
 
@@ -794,7 +804,7 @@ pub fn VGG16(comptime T: type) type {
             y = try reluEx(T, try self.fields.conv4_3.forward(y, chain), chain);
             y = try maxPoolingEx(T, y, .{
                 .kernel_size = .{ 2, 2 },
-                .padding = .{ 2, 2 },
+                .padding = .{ 0, 0 },
                 .stride = .{ 2, 2 },
             }, chain);
 
@@ -803,7 +813,7 @@ pub fn VGG16(comptime T: type) type {
             y = try reluEx(T, try self.fields.conv5_3.forward(y, chain), chain);
             y = try maxPoolingEx(T, y, .{
                 .kernel_size = .{ 2, 2 },
-                .padding = .{ 2, 2 },
+                .padding = .{ 0, 0 },
                 .stride = .{ 2, 2 },
             }, chain);
 
@@ -811,7 +821,15 @@ pub fn VGG16(comptime T: type) type {
 
             y = try dropoutEx(T, try reluEx(T, try self.fields.fc6.forward(y, chain), chain), 0.5, train, chain);
             y = try dropoutEx(T, try reluEx(T, try self.fields.fc7.forward(y, chain), chain), 0.5, train, chain);
-            y = try self.fields.fc8.forward(y, chain);
+
+            y = try dropoutEx(T, try reluEx(T, try self.fields.fc8.forward(y, chain), chain), 0.5, train, chain);
+
+            // y = try reluEx(T, try self.fields.fc6.forward(y, chain), chain);
+            // y = try reluEx(T, try self.fields.fc7.forward(y, chain), chain);
+            // y = try reluEx(T, try self.fields.fc8.forward(y, chain), chain);
+            y = try self.fields.out.forward(y, chain);
+
+            //   try dbg(T, &y.asUntaggedConst(T).data, y.getContext());
 
             return y;
         }

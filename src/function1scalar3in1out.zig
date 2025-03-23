@@ -191,20 +191,22 @@ pub fn Conv1D(comptime T: type) type {
             // Now col is typically [N, C*k, out_len], or something similar.
 
             // Reshape w => [OutC, C*K] to dot with col => [N, C*K, out_len]
-            var w_reshaped = try w.reshape(&.{ outc, c * k }, context.stream);
+            var w_reshaped = try w.cloneAsync(context.stream);
             defer w_reshaped.deinitAsync(context.stream);
+            try w_reshaped.reshape(&.{ outc, c * k });
 
             // tensordot: we want (C*K) dimension to match
             // => y shape [N, OutC, out_len]
-            var y = try col.tensordot(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
+            var y = try col.tensordotImp(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
             defer y.deinitAsync(context.stream);
 
             var y_roll = try y.rollaxis(2, 1, context.stream);
             defer y_roll.deinitAsync(context.stream);
 
             // Add bias
-            var b_reshaped = try b.reshape(&.{ 1, b.calcLen(), 1 }, context.stream);
+            var b_reshaped = try b.cloneAsync(context.stream);
             defer b_reshaped.deinitAsync(context.stream);
+            try b_reshaped.reshape(&.{ 1, b.calcLen(), 1 });
 
             // broadcast [1,OutC,1] => [N,OutC,outLen]
             var b_brod = try b_reshaped.broadcastTo(y_roll.base.getShapeConst(), context.stream);
@@ -338,7 +340,7 @@ pub fn Deconv1D(comptime T: type) type {
             // weight:  [OutC, InC, K]
             // x:       [N, InC, L]
             // We want to dot the "InC" dimension so reorder or use tensordot
-            var gcol = try weight.tensordot(
+            var gcol = try weight.tensordotImp(
                 x,
                 context.allocator,
                 &.{0}, // weight OutC dimension not matched
@@ -365,8 +367,9 @@ pub fn Deconv1D(comptime T: type) type {
             errdefer y.deinitAsync(context.stream);
 
             // Add bias
-            var b_reshaped = try b.reshape(&.{ 1, b.calcLen(), 1 }, context.stream);
+            var b_reshaped = try b.cloneAsync(context.stream);
             defer b_reshaped.deinitAsync(context.stream);
+            try b_reshaped.reshape(&.{ 1, b.calcLen(), 1 });
 
             var b_brod = try b_reshaped.broadcastTo(y.base.getShapeConst(), context.stream);
             defer b_brod.deinitAsync(context.stream);
@@ -479,10 +482,11 @@ pub fn Conv2D(comptime T: type) type {
             );
             defer col.deinitAsync(context.stream);
 
-            var w_reshaped = try w.reshape(&.{ oc, ic * kh * kw }, context.stream);
+            var w_reshaped = try w.cloneAsync(context.stream);
             defer w_reshaped.deinitAsync(context.stream);
+            try w_reshaped.reshape(&.{ oc, ic * kh * kw });
 
-            var y = try col.tensordot(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
+            var y = try col.tensordotImp(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
             defer y.deinitAsync(context.stream);
 
             var y_roll = try y.rollaxis(3, 1, context.stream);
@@ -597,7 +601,7 @@ pub fn Deconv2D(comptime T: type) type {
 
             const img_shape: [4]usize = .{ n, ic, out_h, out_w };
 
-            var gcol = try weight.tensordot(x, context.allocator, &.{0}, &.{1}, context.stream);
+            var gcol = try weight.tensordotImp(x, context.allocator, &.{0}, &.{1}, context.stream);
             defer gcol.deinitAsync(context.stream);
 
             var gcol_roll = try gcol.rollaxis(3, 0, context.stream);
@@ -605,14 +609,16 @@ pub fn Deconv2D(comptime T: type) type {
 
             // Reshape to 2D for col2im
             const flat_shape = &.{ n * h * w, ic * kh * kw };
-            var gcol_flat = try gcol_roll.reshape(flat_shape, context.stream);
+            var gcol_flat = try gcol_roll.cloneAsync(context.stream);
             defer gcol_flat.deinitAsync(context.stream);
+            try gcol_flat.reshape(flat_shape);
 
             var y = try gcol_flat.col2im(&img_shape, .{ kh, kw }, .{ sy, sx }, .{ ph, pw }, .{ dy, dx }, context.stream);
             errdefer y.deinitAsync(context.stream);
 
-            var b_reshaped = try b.reshape(&.{ 1, b.calcLen(), 1, 1 }, context.stream);
+            var b_reshaped = try b.cloneAsync(context.stream);
             defer b_reshaped.deinitAsync(context.stream);
+            try b_reshaped.reshape(&.{ 1, b.calcLen(), 1, 1 });
 
             var b_brod = try b.broadcastTo(y.base.getShapeConst(), context.stream);
             defer b_brod.deinitAsync(context.stream);
@@ -695,15 +701,14 @@ pub fn BatchNorm(comptime T: type) type {
             train: bool,
 
             pub fn init(decay: T, eps: T, train: bool, x_shape: []const usize, context: *Context) !Option {
-                const new_shape, const new_shape_keepdims = try GPUTensor(T).computeOutShape(context.allocator, x_shape, &.{0}, true);
-                defer context.allocator.free(new_shape);
-                defer context.allocator.free(new_shape_keepdims);
+                const keepdims = try GPUTensor(T).computeOutShape(context.allocator, x_shape, &.{0}, true);
+                defer context.allocator.free(keepdims);
 
-                var running_mean: GPUTensor(T) = try .initAsync(new_shape_keepdims, context.stream);
+                var running_mean: GPUTensor(T) = try .initAsync(keepdims, context.stream);
                 errdefer running_mean.deinitAsync(context.stream);
                 try running_mean.fill(0.0, context.stream);
 
-                var running_variance: GPUTensor(T) = try .initAsync(new_shape_keepdims, context.stream);
+                var running_variance: GPUTensor(T) = try .initAsync(keepdims, context.stream);
                 errdefer running_variance.deinitAsync(context.stream);
                 try running_variance.fill(0.0, context.stream);
 
@@ -758,8 +763,9 @@ pub fn BatchNorm(comptime T: type) type {
                     const W = shape[3];
                     var x_trans = try x.transposeEx(self.base.context.allocator, &.{ 0, 2, 3, 1 }, stream);
                     defer x_trans.deinitAsync(stream);
-                    var x_reshaped = try x_trans.reshape(&.{ N * H * W, C }, stream);
+                    var x_reshaped = try x_trans.cloneAsync(stream);
                     errdefer x_reshaped.deinitAsync(stream);
+                    try x_reshaped.reshape(&.{ N * H * W, C });
 
                     break :blk x_reshaped.move();
                 } else {
@@ -875,8 +881,10 @@ pub fn BatchNorm(comptime T: type) type {
                     const C = shape[1];
                     const H = shape[2];
                     const W = shape[3];
-                    var y_reshaped = try y_temp.reshape(&.{ N, H, W, C }, stream);
+                    var y_reshaped = try y_temp.cloneAsync(stream);
                     defer y_reshaped.deinitAsync(stream);
+                    try y_reshaped.reshape(&.{ N, H, W, C });
+
                     var y_trans = try y_reshaped.transposeEx(self.base.context.allocator, &.{ 0, 3, 1, 2 }, stream);
                     errdefer y_trans.deinitAsync(stream);
 
@@ -905,8 +913,11 @@ pub fn BatchNorm(comptime T: type) type {
                     const W = shape[3];
                     var gy_trans = try gy_tensor.transposeEx(self.base.context.allocator, &.{ 0, 2, 3, 1 }, stream);
                     defer gy_trans.deinitAsync(stream);
-                    var gy_reshaped = try gy_trans.reshape(&.{ N * H * W, C }, stream);
+
+                    var gy_reshaped = try gy_trans.cloneAsync(stream);
                     errdefer gy_reshaped.deinitAsync(stream);
+                    try gy_reshaped.reshape(&.{ N * H * W, C });
+
                     break :blk gy_reshaped.move();
                 } else {
                     break :blk try gy_tensor.cloneAsync(stream);
@@ -926,8 +937,11 @@ pub fn BatchNorm(comptime T: type) type {
                     const W = shape[3];
                     var x_trans = try x_tensor.transposeEx(self.base.context.allocator, &.{ 0, 2, 3, 1 }, stream);
                     defer x_trans.deinitAsync(stream);
-                    var x_reshaped = try x_trans.reshape(&.{ N * H * W, C }, stream);
+
+                    var x_reshaped = try x_trans.cloneAsync(stream);
                     errdefer x_reshaped.deinitAsync(stream);
+                    try x_reshaped.reshape(&.{ N * H * W, C });
+
                     break :blk x_reshaped.move();
                 } else {
                     break :blk try x_tensor.cloneAsync(stream);
@@ -1005,8 +1019,11 @@ pub fn BatchNorm(comptime T: type) type {
                     const C = shape[1];
                     const H = shape[2];
                     const W = shape[3];
-                    var gx_reshaped = try gx.reshape(&.{ N, H, W, C }, stream);
+
+                    var gx_reshaped = try gx.cloneAsync(stream);
                     defer gx_reshaped.deinitAsync(stream);
+                    try gx_reshaped.reshape(&.{ N, H, W, C });
+
                     var gx_trans = try gx_reshaped.transposeEx(self.base.context.allocator, &.{ 0, 3, 1, 2 }, stream);
                     errdefer gx_trans.deinitAsync(stream);
                     break :blk gx_trans.move();

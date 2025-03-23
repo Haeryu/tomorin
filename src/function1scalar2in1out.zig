@@ -164,11 +164,12 @@ pub fn Conv1DNoBias(comptime T: type) type {
             );
             defer col.deinitAsync(context.stream);
 
-            var w_reshaped = try w.reshape(&.{ outc, c * k }, context.stream);
+            var w_reshaped = try w.cloneAsync(context.stream);
             defer w_reshaped.deinitAsync(context.stream);
+            try w_reshaped.reshape(&.{ outc, c * k });
 
             // tensordot across dimension=1 => shape [N, OutC, out_len]
-            var y = try col.tensordot(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
+            var y = try col.tensordotImp(&w_reshaped, context.allocator, &.{1}, &.{1}, context.stream);
             defer y.deinitAsync(context.stream);
 
             var y_roll = try y.rollaxis(2, 1, context.stream);
@@ -270,7 +271,7 @@ pub fn Deconv1DNoBias(comptime T: type) type {
 
             const out_shape: [3]usize = .{ n, outc, out_l };
 
-            var gcol = try w.tensordot(
+            var gcol = try w.tensordotImp(
                 x,
                 context.allocator,
                 &.{0}, // match w OutC to nothing => keep it separate
@@ -372,7 +373,7 @@ pub fn Conv1DGradW(comptime T: type) type {
             defer col.deinitAsync(context.stream);
 
             // tensordot over N,L
-            var gw = try gy.tensordot(
+            var gw = try gy.tensordotImp(
                 &col,
                 context.allocator,
                 &.{ 0, 2 }, // sum over N, out_len
@@ -488,10 +489,11 @@ pub fn Conv2DNoBias(comptime T: type) type {
             );
             defer col.deinitAsync(context.stream);
 
-            var w_reshaped = try w.reshape(&.{ oc, ic * kh * kw }, context.stream);
+            var w_reshaped = try w.cloneAsync(context.stream);
             defer w_reshaped.deinitAsync(context.stream);
+            try w_reshaped.reshape(&.{ oc, ic * kh * kw });
 
-            var y = try col.tensordot(&w_reshaped, context.allocator, &.{1}, // col dimension
+            var y = try col.tensordotImp(&w_reshaped, context.allocator, &.{1}, // col dimension
                 &.{1}, // w_reshaped dimension
                 context.stream);
             defer y.deinitAsync(context.stream);
@@ -596,7 +598,7 @@ pub fn Deconv2DNoBias(comptime T: type) type {
 
             const img_shape: [4]usize = .{ n, ic, out_h, out_w };
 
-            var gcol = try weight.tensordot(x, context.allocator, &.{0}, &.{1}, context.stream);
+            var gcol = try weight.tensordotImp(x, context.allocator, &.{0}, &.{1}, context.stream);
             defer gcol.deinitAsync(context.stream);
 
             var gcol_roll = try gcol.rollaxis(3, 0, context.stream);
@@ -604,8 +606,11 @@ pub fn Deconv2DNoBias(comptime T: type) type {
 
             // Reshape to 2D for col2im
             const flat_shape = &.{ n * h * w, ic * kh * kw };
-            var gcol_flat = try gcol_roll.reshape(flat_shape, context.stream);
+
+            var gcol_flat = try gcol_roll.cloneAsync(context.stream);
             defer gcol_flat.deinitAsync(context.stream);
+
+            try gcol_flat.reshape(flat_shape);
 
             var y = try gcol_flat.col2im(&img_shape, .{ kh, kw }, .{ sy, sx }, .{ ph, pw }, .{ dy, dx }, context.stream);
             errdefer y.deinitAsync(context.stream);
@@ -695,11 +700,13 @@ pub fn Conv2DGradW(comptime T: type) type {
             var col = try x.im2col(kernel_size, stride, padding, dilation, context.stream);
             defer col.deinitAsync(context.stream);
 
-            var gw = try gy.tensordot(&col, context.allocator, &.{ 0, 2, 3 }, &.{ 0, 2, 3 }, context.stream);
-            errdefer gw.deinitAsync(context.stream);
+            var gw = try gy.tensordotImp(&col, context.allocator, &.{ 0, 2, 3 }, &.{ 0, 2, 3 }, context.stream);
+            defer gw.deinitAsync(context.stream);
 
-            var gw_reshaped = try gw.reshape(&.{ outc, inc, kh, kw }, context.stream);
-            errdefer gw_reshaped.deinitAsync(context.stream);
+            var gw_reshaped = try gw.cloneAsync(context.stream);
+            defer gw_reshaped.deinitAsync(context.stream);
+
+            try gw_reshaped.reshape(&.{ outc, inc, kh, kw });
 
             return gw_reshaped.move();
         }
