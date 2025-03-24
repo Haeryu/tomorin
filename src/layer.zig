@@ -10,10 +10,14 @@ const linearEx = function.linearEx;
 const broadcastToEx = function.broadcastToEx;
 const matmulEx = function.matmulEx;
 const conv2DEx = function.conv2DEx;
+const conv2DNoBiasEx = function.conv2DNoBiasEx;
 const reluEx = function.reluEx;
 const maxPoolingEx = function.maxPoolingEx;
 const reshapeEx = function.reshapeEx;
 const dropoutEx = function.dropoutEx;
+const batchNormEx = function.batchNormEx;
+const averagePoolingEx = function.averagePoolingEx;
+const addEx = function.addEx;
 
 const dbg = @import("util.zig").debugPrintGpuTensor;
 
@@ -496,18 +500,32 @@ pub fn Conv2d(comptime T: type) type {
                 self.fields.w = try self.initW();
             }
 
-            return try conv2DEx(
-                T,
-                x,
-                self.fields.w.?,
-                self.fields.b.?,
-                .{
-                    .dilation = self.dilation,
-                    .padding = self.padding,
-                    .stride = self.stride,
-                },
-                chain,
-            );
+            if (self.fields.b) |b| {
+                return try conv2DEx(
+                    T,
+                    x,
+                    self.fields.w.?,
+                    b,
+                    .{
+                        .dilation = self.dilation,
+                        .padding = self.padding,
+                        .stride = self.stride,
+                    },
+                    chain,
+                );
+            } else {
+                return try conv2DNoBiasEx(
+                    T,
+                    x,
+                    self.fields.w.?,
+                    .{
+                        .dilation = self.dilation,
+                        .padding = self.padding,
+                        .stride = self.stride,
+                    },
+                    chain,
+                );
+            }
         }
     };
 }
@@ -712,8 +730,8 @@ pub fn VGG16(comptime T: type) type {
             errdefer conv5_3.destroy();
             var fc6: Linear(T) = try .init(
                 null,
-                //4096,
-                512,
+                4096,
+                // 512,
                 false,
                 .he_normal,
                 context,
@@ -722,8 +740,8 @@ pub fn VGG16(comptime T: type) type {
             errdefer fc6.destroy();
             var fc7: Linear(T) = try .init(
                 null,
-                //4096,
-                512,
+                4096,
+                // 512,
                 false,
                 .he_normal,
                 context,
@@ -732,8 +750,8 @@ pub fn VGG16(comptime T: type) type {
             errdefer fc7.destroy();
             var fc8: Linear(T) = try .init(
                 null,
-                // 1000,
-                100,
+                1000,
+                //100,
                 false,
                 .he_normal,
                 context,
@@ -829,9 +847,541 @@ pub fn VGG16(comptime T: type) type {
             // y = try reluEx(T, try self.fields.fc8.forward(y, chain), chain);
             y = try self.fields.out.forward(y, chain);
 
-            //   try dbg(T, &y.asUntaggedConst(T).data, y.getContext());
+            try dbg(T, &y.asUntaggedConst(T).data, y.getContext());
 
             return y;
+        }
+    };
+}
+
+pub fn BatchNorm(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{
+                "avg_mean",
+                "avg_var",
+                "gamma",
+                "beta",
+            },
+            &.{},
+        ),
+        context: *Context,
+        chain: *Chain,
+        const Self = @This();
+
+        pub fn init(
+            context: *Context,
+            chain: *Chain,
+        ) Self {
+            return .{
+                .fields = .{
+                    .avg_mean = null,
+                    .avg_var = null,
+                    .gamma = null,
+                    .beta = null,
+                },
+                .context = context,
+                .chain = chain,
+            };
+        }
+
+        pub fn initParams(self: *Self, x: *TaggedVar) !void {
+            const allocator = self.context.allocator;
+            const x_shape = x.getShape();
+            var axes: []const isize = undefined;
+            if (x_shape.len == 4) {
+                axes = &.{ 0, 2, 3 }; // Batch, Height, Width for 4D inputs
+            } else if (x_shape.len == 2) {
+                axes = &.{0}; // Batch for 2D inputs
+            } else {
+                return error.UnsupportedInputShape;
+            }
+            const keepdims = try GPUTensor(T).computeOutShape(allocator, x_shape, axes, true);
+            defer allocator.free(keepdims);
+
+            if (self.fields.avg_mean == null) {
+                var zero: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer zero.deinitAsync(self.context.stream);
+                try zero.fill(0.0, self.context.stream);
+
+                self.fields.avg_mean = try self.chain.createVariable(T, zero.move(), "avg_mean");
+            }
+            if (self.fields.avg_var == null) {
+                var one: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer one.deinitAsync(self.context.stream);
+                try one.fill(1.0, self.context.stream);
+
+                self.fields.avg_var = try self.chain.createVariable(T, one.move(), "avg_var");
+            }
+            if (self.fields.gamma == null) {
+                var one: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer one.deinitAsync(self.context.stream);
+                try one.fill(1.0, self.context.stream);
+
+                self.fields.gamma = try self.chain.createVariable(T, one.move(), "gamma");
+            }
+            if (self.fields.beta == null) {
+                var zero: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer zero.deinitAsync(self.context.stream);
+                try zero.fill(0.0, self.context.stream);
+
+                self.fields.beta = try self.chain.createVariable(T, zero.move(), "beta");
+            }
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, train: bool, chain: *Chain) !*TaggedVar {
+            if (self.fields.avg_mean == null) {
+                try self.initParams(x);
+            }
+
+            return try batchNormEx(
+                T,
+                x,
+                self.fields.gamma.?,
+                self.fields.beta.?,
+                .{
+                    .context = self.context,
+                    .running_mean = self.fields.avg_mean.?,
+                    .running_variance = self.fields.avg_var.?,
+                    .train = train,
+                },
+                chain,
+            );
+        }
+    };
+}
+
+pub fn ResNet(comptime T: type, comptime layers_count: comptime_int) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{},
+            &.{
+                .{ "conv1", Conv2d(T) },
+                .{ "bn1", BatchNorm(T) },
+                .{ "res2", BuildingBlock(T, block[0]) },
+                .{ "res3", BuildingBlock(T, block[1]) },
+                .{ "res4", BuildingBlock(T, block[2]) },
+                .{ "res5", BuildingBlock(T, block[3]) },
+                .{ "fc6", Linear(T) },
+                .{ "out", Linear(T) },
+            },
+        ),
+        const Self = @This();
+
+        const block: [4]comptime_int = switch (layers_count) {
+            50 => .{ 3, 4, 6, 3 },
+            101 => .{ 3, 4, 23, 3 },
+            152 => .{ 3, 8, 36, 3 },
+            else => unreachable,
+        };
+
+        pub fn init(
+            out_num: usize,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            var conv1: Conv2d(T) = try .init(
+                null,
+                64,
+                .{ 7, 7 },
+                .{ 2, 2 },
+                .{ 3, 3 },
+                .{ 1, 1 },
+                false,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv1.destroy();
+
+            var bn1: BatchNorm(T) = .init(context, chain);
+            errdefer bn1.destroy();
+
+            var res2: BuildingBlock(T, block[0]) = try .init(64, 64, 256, .{ 1, 1 }, false, context, chain);
+            errdefer res2.destroy();
+
+            var res3: BuildingBlock(T, block[1]) = try .init(256, 128, 512, .{ 2, 2 }, false, context, chain);
+            errdefer res3.destroy();
+
+            var res4: BuildingBlock(T, block[2]) = try .init(512, 256, 1024, .{ 2, 2 }, false, context, chain);
+            errdefer res4.destroy();
+
+            var res5: BuildingBlock(T, block[3]) = try .init(1024, 512, 2048, .{ 2, 2 }, false, context, chain);
+            errdefer res5.destroy();
+
+            var fc6: Linear(T) = try .init(
+                null,
+                1000,
+                false,
+                .he_uniform,
+                context,
+                chain,
+            );
+            errdefer fc6.destroy();
+
+            var out: Linear(T) = try .init(
+                null,
+                out_num,
+                false,
+                .he_uniform,
+                context,
+                chain,
+            );
+            errdefer out.destroy();
+
+            return .{
+                .fields = .{
+                    .conv1 = conv1,
+                    .bn1 = bn1,
+                    .res2 = res2,
+                    .res3 = res3,
+                    .res4 = res4,
+                    .res5 = res5,
+                    .fc6 = fc6,
+                    .out = out,
+                },
+            };
+        }
+        pub fn forward(self: *Self, x: *TaggedVar, train: bool, chain: *Chain) !*TaggedVar {
+            var y = try reluEx(T, try self.fields.bn1.forward(try self.fields.conv1.forward(x, chain), train, chain), chain);
+            y = try maxPoolingEx(T, y, .{
+                .kernel_size = .{ 3, 3 },
+                .stride = .{ 2, 2 },
+                .padding = .{ 0, 0 },
+            }, chain);
+            y = try self.fields.res2.forward(y, train, chain);
+            y = try self.fields.res3.forward(y, train, chain);
+            y = try self.fields.res4.forward(y, train, chain);
+            y = try self.fields.res5.forward(y, train, chain);
+            y = try globalAvgPooling(T, y, chain);
+            y = try self.fields.fc6.forward(y, chain);
+            y = try reluEx(T, y, chain);
+            y = try self.fields.out.forward(y, chain);
+
+            return y;
+        }
+    };
+}
+
+pub fn ResNet152(comptime T: type) type {
+    return ResNet(T, 152);
+}
+
+pub fn ResNet101(comptime T: type) type {
+    return ResNet(T, 101);
+}
+
+pub fn ResNet50(comptime T: type) type {
+    return ResNet(T, 50);
+}
+
+fn globalAvgPooling(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    const x_shape = x.getShape();
+    const n = x_shape[0];
+    const c = x_shape[1];
+    const h = x_shape[2];
+    const w = x_shape[3];
+
+    var t = try averagePoolingEx(T, x, .{
+        .kernel_size = .{ h, w },
+        .stride = .{ 1, 1 },
+        .padding = .{ 0, 0 },
+    }, chain);
+    t = try reshapeEx(T, t, &.{ n, c }, chain);
+
+    return t;
+}
+
+pub fn BuildingBlock(comptime T: type, comptime layers_count: comptime_int) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{},
+            &makeFields(),
+        ),
+        const Self = @This();
+
+        fn makeFields() [layers_count + 1]std.meta.Tuple(&.{ [:0]const u8, type }) {
+            var fields: [layers_count + 1]std.meta.Tuple(&.{ [:0]const u8, type }) = undefined;
+            fields[0] = .{ "a", BottleneckA(T) };
+            for (fields[1..], 1..) |*field, i| {
+                field.* = .{ std.fmt.comptimePrint("b{}", .{i}), BottleneckB(T) };
+            }
+            return fields;
+        }
+
+        pub fn init(
+            in_channels: usize,
+            mid_channels: usize,
+            out_channels: usize,
+            stride: [2]usize,
+            downsample_fb: bool,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            var self: Self = undefined;
+            self.fields.a = try BottleneckA(T).init(
+                in_channels,
+                mid_channels,
+                out_channels,
+                stride,
+                downsample_fb,
+                context,
+                chain,
+            );
+            errdefer self.fields.a.destroy();
+
+            inline for (1..layers_count + 1) |i| {
+                errdefer {
+                    inline for (1..i) |j| {
+                        @field(self.fields, std.fmt.comptimePrint("b{}", .{j})).destroy();
+                    }
+                }
+                @field(self.fields, std.fmt.comptimePrint("b{}", .{i})) = try BottleneckB(T).init(
+                    out_channels,
+                    mid_channels,
+                    context,
+                    chain,
+                );
+            }
+
+            return self;
+        }
+
+        pub fn forward(
+            self: *Self,
+            x: *TaggedVar,
+            train: bool,
+            chain: *Chain,
+        ) !*TaggedVar {
+            var y: *TaggedVar = try self.fields.a.forward(x, train, chain);
+            inline for (1..layers_count + 1) |i| {
+                y = try @field(self.fields, std.fmt.comptimePrint("b{}", .{i})).forward(y, train, chain);
+            }
+            return y;
+        }
+    };
+}
+
+pub fn BottleneckA(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{},
+            &.{
+                .{ "conv1", Conv2d(T) },
+                .{ "bn1", BatchNorm(T) },
+                .{ "conv2", Conv2d(T) },
+                .{ "bn2", BatchNorm(T) },
+                .{ "conv3", Conv2d(T) },
+                .{ "bn3", BatchNorm(T) },
+                .{ "conv4", Conv2d(T) },
+                .{ "bn4", BatchNorm(T) },
+            },
+        ),
+
+        const Self = @This();
+
+        pub fn init(
+            _: usize,
+            mid_channels: usize,
+            out_channels: usize,
+            stride: [2]usize,
+            downsample_fb: bool,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            const stride_1x1, const stride_3x3 = if (downsample_fb) .{ [2]usize{ 1, 1 }, stride } else .{ stride, [2]usize{ 1, 1 } };
+
+            var conv1: Conv2d(T) = try .init(
+                null,
+                mid_channels,
+                .{ 1, 1 },
+                stride_1x1,
+                .{ 0, 0 },
+                .{ 1, 1 },
+                true,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv1.destroy();
+            var bn1: BatchNorm(T) = .init(context, chain);
+            errdefer bn1.destroy();
+
+            var conv2: Conv2d(T) = try .init(
+                null,
+                mid_channels,
+                .{ 3, 3 },
+                stride_3x3,
+                .{ 1, 1 },
+                .{ 1, 1 },
+                true,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv2.destroy();
+            var bn2: BatchNorm(T) = .init(context, chain);
+            errdefer bn2.destroy();
+
+            var conv3: Conv2d(T) = try .init(
+                null,
+                out_channels,
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 0, 0 },
+                .{ 1, 1 },
+                true,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv3.destroy();
+            var bn3: BatchNorm(T) = .init(context, chain);
+            errdefer bn3.destroy();
+
+            var conv4: Conv2d(T) = try .init(
+                null,
+                out_channels,
+                .{ 1, 1 },
+                stride,
+                .{ 0, 0 },
+                .{ 1, 1 },
+                true,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv4.destroy();
+            var bn4: BatchNorm(T) = .init(context, chain);
+            errdefer bn4.destroy();
+
+            return .{
+                .fields = .{
+                    .conv1 = conv1,
+                    .bn1 = bn1,
+                    .conv2 = conv2,
+                    .bn2 = bn2,
+                    .conv3 = conv3,
+                    .bn3 = bn3,
+                    .conv4 = conv4,
+                    .bn4 = bn4,
+                },
+            };
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, train: bool, chain: *Chain) !*TaggedVar {
+            var h1 = try self.fields.conv1.forward(x, chain);
+            h1 = try self.fields.bn1.forward(h1, train, chain);
+            h1 = try reluEx(T, h1, chain);
+            h1 = try self.fields.conv2.forward(h1, chain);
+            h1 = try self.fields.bn2.forward(h1, train, chain);
+            h1 = try reluEx(T, h1, chain);
+            h1 = try self.fields.conv3.forward(h1, chain);
+            h1 = try self.fields.bn3.forward(h1, train, chain);
+            const h2 = try self.fields.bn4.forward(try self.fields.conv4.forward(x, chain), train, chain);
+            //std.debug.print("{any} {any}", .{ h1.getShape(), h2.getShape() });
+            return try reluEx(T, try addEx(T, h1, h2, chain), chain);
+        }
+    };
+}
+
+pub fn BottleneckB(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{},
+            &.{
+                .{ "conv1", Conv2d(T) },
+                .{ "bn1", BatchNorm(T) },
+                .{ "conv2", Conv2d(T) },
+                .{ "bn2", BatchNorm(T) },
+                .{ "conv3", Conv2d(T) },
+                .{ "bn3", BatchNorm(T) },
+            },
+        ),
+
+        const Self = @This();
+
+        pub fn init(
+            out_channels: usize,
+            mid_channels: usize,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            var conv1: Conv2d(T) = try .init(
+                null,
+                mid_channels,
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 0, 0 },
+                .{ 1, 1 },
+                true,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv1.destroy();
+            var bn1: BatchNorm(T) = .init(context, chain);
+            errdefer bn1.destroy();
+
+            var conv2: Conv2d(T) = try .init(
+                null,
+                mid_channels,
+                .{ 3, 3 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 1, 1 },
+                true,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv2.destroy();
+            var bn2: BatchNorm(T) = .init(context, chain);
+            errdefer bn2.destroy();
+
+            var conv3: Conv2d(T) = try .init(
+                null,
+                out_channels,
+                .{ 1, 1 },
+                .{ 1, 1 },
+                .{ 0, 0 },
+                .{ 1, 1 },
+                true,
+                .he_normal,
+                context,
+                chain,
+            );
+            errdefer conv3.destroy();
+            var bn3: BatchNorm(T) = .init(context, chain);
+            errdefer bn3.destroy();
+
+            return .{
+                .fields = .{
+                    .conv1 = conv1,
+                    .bn1 = bn1,
+                    .conv2 = conv2,
+                    .bn2 = bn2,
+                    .conv3 = conv3,
+                    .bn3 = bn3,
+                },
+            };
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, train: bool, chain: *Chain) !*TaggedVar {
+            var h = try self.fields.conv1.forward(x, chain);
+            h = try self.fields.bn1.forward(h, train, chain);
+            h = try reluEx(T, h, chain);
+            h = try self.fields.conv2.forward(h, chain);
+            h = try self.fields.bn2.forward(h, train, chain);
+            h = try reluEx(T, h, chain);
+            h = try self.fields.conv3.forward(h, chain);
+            h = try self.fields.bn3.forward(h, train, chain);
+            return try reluEx(T, try addEx(T, h, x, chain), chain);
         }
     };
 }

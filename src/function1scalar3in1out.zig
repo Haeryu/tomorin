@@ -691,53 +691,53 @@ pub fn BatchNorm(comptime T: type) type {
         pub const Out = T;
 
         pub const Option = struct {
-            running_mean: GPUTensor(T),
-            running_variance: GPUTensor(T),
-            inv_std: ?GPUTensor(T),
+            running_mean: *TaggedVar,
+            running_variance: *TaggedVar,
             context: *Context,
 
-            decay: T,
-            eps: T,
+            decay: T = 0.9,
+            eps: T = 2e-5,
             train: bool,
+            inv_std: ?GPUTensor(T) = null,
 
-            pub fn init(decay: T, eps: T, train: bool, x_shape: []const usize, context: *Context) !Option {
-                const keepdims = try GPUTensor(T).computeOutShape(context.allocator, x_shape, &.{0}, true);
-                defer context.allocator.free(keepdims);
+            // pub fn init(decay: T, eps: T, train: bool, x_shape: []const usize, context: *Context) !Option {
+            //     const keepdims = try GPUTensor(T).computeOutShape(context.allocator, x_shape, &.{0}, true);
+            //     defer context.allocator.free(keepdims);
 
-                var running_mean: GPUTensor(T) = try .initAsync(keepdims, context.stream);
-                errdefer running_mean.deinitAsync(context.stream);
-                try running_mean.fill(0.0, context.stream);
+            //     var running_mean: GPUTensor(T) = try .initAsync(keepdims, context.stream);
+            //     errdefer running_mean.deinitAsync(context.stream);
+            //     try running_mean.fill(0.0, context.stream);
 
-                var running_variance: GPUTensor(T) = try .initAsync(keepdims, context.stream);
-                errdefer running_variance.deinitAsync(context.stream);
-                try running_variance.fill(0.0, context.stream);
+            //     var running_variance: GPUTensor(T) = try .initAsync(keepdims, context.stream);
+            //     errdefer running_variance.deinitAsync(context.stream);
+            //     try running_variance.fill(0.0, context.stream);
 
-                return .{
-                    .running_mean = running_mean.move(),
-                    .running_variance = running_variance.move(),
-                    .decay = decay,
-                    .eps = eps,
-                    .train = train,
-                    .context = context,
-                    .inv_std = null,
-                };
-            }
+            //     return .{
+            //         .running_mean = running_mean.move(),
+            //         .running_variance = running_variance.move(),
+            //         .decay = decay,
+            //         .eps = eps,
+            //         .train = train,
+            //         .context = context,
+            //         .inv_std = null,
+            //     };
+            // }
 
-            pub fn move(self: *Option) Option {
-                return .{
-                    .running_mean = self.running_mean.move(),
-                    .running_variance = self.running_variance.move(),
-                    .decay = self.decay,
-                    .eps = self.eps,
-                    .train = self.train,
-                    .context = self.context,
-                    .inv_std = if (self.inv_std) |*is| is.move() else null,
-                };
-            }
+            // pub fn move(self: *Option) Option {
+            //     return .{
+            //         .running_mean = self.running_mean.move(),
+            //         .running_variance = self.running_variance.move(),
+            //         .decay = self.decay,
+            //         .eps = self.eps,
+            //         .train = self.train,
+            //         .context = self.context,
+            //         .inv_std = if (self.inv_std) |*is| is.move() else null,
+            //     };
+            // }
 
             pub fn deinit(self: *Option) void {
-                self.running_mean.deinitAsync(self.context.stream);
-                self.running_variance.deinitAsync(self.context.stream);
+                // self.running_mean.deinitAsync(self.context.stream);
+                // self.running_variance.deinitAsync(self.context.stream);
                 if (self.inv_std) |*iv| {
                     iv.deinitAsync(self.context.stream);
                 }
@@ -813,18 +813,25 @@ pub fn BatchNorm(comptime T: type) type {
                     const adjust = m / s;
 
                     // Update running_mean
-                    try self.scalar.running_mean.scale(self.scalar.decay, stream);
+                    try self.scalar.running_mean.asUntagged(T).data.scale(self.scalar.decay, stream);
                     var temp_mean = try mean.cloneAsync(stream);
                     defer temp_mean.deinitAsync(stream);
                     try temp_mean.scale(1 - self.scalar.decay, stream);
-                    try self.scalar.running_mean.add(&temp_mean, stream);
+                    if (x.base.getShapeConst().len == 4) {
+                        try temp_mean.reshape(&.{ 1, temp_mean.base.getShapeConst()[1], 1, 1 });
+                    }
+                    try self.scalar.running_mean.asUntagged(T).data.add(&temp_mean, stream);
 
                     // Update running_variance with unbiased variance
-                    try self.scalar.running_variance.scale(self.scalar.decay, stream);
+                    try self.scalar.running_variance.asUntagged(T).data.scale(self.scalar.decay, stream);
                     var temp_variance = try variance_biased.cloneAsync(stream);
                     defer temp_variance.deinitAsync(stream);
                     try temp_variance.scale(adjust * (1 - self.scalar.decay), stream);
-                    try self.scalar.running_variance.add(&temp_variance, stream);
+
+                    if (x.base.getShapeConst().len == 4) {
+                        try temp_variance.reshape(&.{ 1, temp_variance.base.getShapeConst()[1], 1, 1 });
+                    }
+                    try self.scalar.running_variance.asUntagged(T).data.add(&temp_variance, stream);
 
                     // Compute inv_std for normalization and store for backward
                     var inv_std = try variance_biased.cloneAsync(stream);
@@ -851,22 +858,35 @@ pub fn BatchNorm(comptime T: type) type {
                     xc = x_proc.move();
                 } else {
                     // Inference mode: Use running averages
-                    var inv_std = try self.scalar.running_variance.cloneAsync(stream);
+                    var inv_std = try self.scalar.running_variance.asUntagged(T).data.cloneAsync(stream);
                     defer inv_std.deinitAsync(stream);
                     try inv_std.shift(self.scalar.eps, stream);
                     try inv_std.sqrt(stream);
                     try inv_std.inv(stream);
 
-                    try x_proc.sub(&self.scalar.running_mean, stream);
+                    try x_proc.sub(&self.scalar.running_mean.asUntagged(T).data, stream);
                     try x_proc.product(&inv_std, stream);
                     xc = x_proc.move();
                 }
                 defer xc.deinitAsync(stream);
 
                 // Apply gamma and beta with broadcasting
-                var gamma_broad = try gamma.broadcastTo(xc.base.getShapeConst(), stream);
+
+                // std.debug.print("{any}, {any}\n", .{ gamma.base.getShapeConst(), xc.base.getShapeConst() });
+
+                // Reshape gamma from { 1, 64, 1, 1 } to { 1, 64 }
+                var gamma_reshaped = try gamma.cloneAsync(stream);
+                defer gamma_reshaped.deinitAsync(stream);
+                try gamma_reshaped.reshape(&.{ 1, gamma.base.getShapeConst()[1] }); // { 1, C }, here C = 64
+
+                var gamma_broad = try gamma_reshaped.broadcastTo(xc.base.getShapeConst(), stream);
                 defer gamma_broad.deinitAsync(stream);
-                var beta_broad = try beta.broadcastTo(xc.base.getShapeConst(), stream);
+
+                var beta_reshaped = try beta.cloneAsync(stream);
+                defer beta_reshaped.deinitAsync(stream);
+                try beta_reshaped.reshape(&.{ 1, beta.base.getShapeConst()[1] });
+
+                var beta_broad = try beta_reshaped.broadcastTo(xc.base.getShapeConst(), stream);
                 defer beta_broad.deinitAsync(stream);
 
                 var y_temp = try xc.cloneAsync(stream);
@@ -1001,12 +1021,21 @@ pub fn BatchNorm(comptime T: type) type {
             var gamma_inv_std = try gamma.cloneAsync(stream);
             defer gamma_inv_std.deinitAsync(stream);
 
+            if (x_tensor.base.getShapeConst().len == 4) {
+                try self.scalar.inv_std.?.reshape(&.{ 1, self.scalar.inv_std.?.base.getShapeConst()[1], 1, 1 });
+            }
             var inv_std_broad_gamma = try self.scalar.inv_std.?.broadcastTo(gamma_inv_std.base.getShapeConst(), stream);
             defer inv_std_broad_gamma.deinitAsync(stream);
 
             try gamma_inv_std.product(&inv_std_broad_gamma, stream);
 
-            var gamma_inv_std_broad = try gamma_inv_std.broadcastTo(gx.base.getShapeConst(), stream);
+            //std.debug.print("{any} {any}", .{ gx.base.getShapeConst(), gamma_inv_std.base.getShapeConst() });
+
+            var gamma_inv_std_reshaped = try gamma_inv_std.cloneAsync(stream);
+            defer gamma_inv_std_reshaped.deinitAsync(stream);
+            try gamma_inv_std_reshaped.reshape(&.{ 1, gamma_inv_std.base.getShapeConst()[1] }); // { 1, C }, here C = 64
+
+            var gamma_inv_std_broad = try gamma_inv_std_reshaped.broadcastTo(gx.base.getShapeConst(), stream);
             defer gamma_inv_std_broad.deinitAsync(stream);
 
             try gx.product(&gamma_inv_std_broad, stream);
@@ -1033,15 +1062,41 @@ pub fn BatchNorm(comptime T: type) type {
             };
             defer gx_final.deinitAsync(stream);
 
+            var ggamma_final: GPUTensor(T) = blk: {
+                if (x_tensor.base.getShapeConst().len == 4) {
+                    // Reshape from { 1, C } to { 1, C, 1, 1 } for 4D inputs
+                    var ggamma_reshaped = try ggamma.cloneAsync(stream);
+                    errdefer ggamma_reshaped.deinitAsync(stream);
+                    try ggamma_reshaped.reshape(&.{ 1, ggamma.base.getShapeConst()[1], 1, 1 });
+                    break :blk ggamma_reshaped.move();
+                } else {
+                    break :blk ggamma.move();
+                }
+            };
+            defer ggamma_final.deinitAsync(stream);
+
+            var gbeta_final: GPUTensor(T) = blk: {
+                if (x_tensor.base.getShapeConst().len == 4) {
+                    // Reshape from { 1, C } to { 1, C, 1, 1 } for 4D inputs
+                    var gbeta_reshaped = try gbeta.cloneAsync(stream);
+                    errdefer gbeta_reshaped.deinitAsync(stream);
+                    try gbeta_reshaped.reshape(&.{ 1, gbeta.base.getShapeConst()[1], 1, 1 });
+                    break :blk gbeta_reshaped.move();
+                } else {
+                    break :blk gbeta.move();
+                }
+            };
+            defer gbeta_final.deinitAsync(stream);
+
             // Create TaggedVar for gradients
             const gx_v = try self.base.chain.createVariable(T, gx_final.move(), null);
-            const ggamma_v = try self.base.chain.createVariable(T, ggamma.move(), null);
-            const gbeta_v = try self.base.chain.createVariable(T, gbeta.move(), null);
+            const ggamma_v = try self.base.chain.createVariable(T, ggamma_final.move(), null);
+            const gbeta_v = try self.base.chain.createVariable(T, gbeta_final.move(), null);
 
             return .{ gx_v, ggamma_v, gbeta_v };
         }
 
-        /// Cleanup function to deallocate inv_std
+        // Cleanup function to deallocate inv_std
         pub fn predestroy(self: *Self) void {
             self.scalar.deinit();
         }

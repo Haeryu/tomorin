@@ -165,6 +165,8 @@ pub fn Optimizer(comptime Self: type) type {
 
             for (params) |param| {
                 if (param) |p| {
+                    if (param.?.refGradConst() == null) continue;
+                    // std.debug.print("{s}\n", .{param.?.asUntagged(f32).name.?});
                     try self.updateOne(p);
                 }
             }

@@ -284,13 +284,13 @@ pub fn CIFAR10Dataset(comptime T: type) type {
 
         pub const num_classes = 10; // 10 classes in CIFAR-10
 
-        /// Holds a path to a .bin file and how many 3073-byte records it contains.
+        // Holds a path to a .bin file and how many 3073-byte records it contains.
         const CIFARFile = struct {
             path: []const u8,
             record_count: usize,
         };
 
-        /// Initialize the dataset in "streaming" fashion, so we do not load all data at once.
+        // Initialize the dataset in "streaming" fashion, so we do not load all data at once.
         pub fn init(allocator: std.mem.Allocator, train: bool) !Self {
             std.fs.cwd().makeDir("datasets/cifar-10/cifar-10-binary") catch |err| {
                 switch (err) {
@@ -301,9 +301,13 @@ pub fn CIFAR10Dataset(comptime T: type) type {
 
             const file_list: []const []const u8 = if (train) &[_][]const u8{
                 "datasets/cifar-10/cifar-10-binary/cifar-10-batches-bin/data_batch_1.bin",
+                "datasets/cifar-10/cifar-10-binary/cifar-10-batches-bin/data_batch_2.bin",
+                "datasets/cifar-10/cifar-10-binary/cifar-10-batches-bin/data_batch_3.bin",
+                "datasets/cifar-10/cifar-10-binary/cifar-10-batches-bin/data_batch_4.bin",
+                "datasets/cifar-10/cifar-10-binary/cifar-10-batches-bin/data_batch_5.bin",
                 // Add other training batches as needed
             } else &[_][]const u8{
-                "datasets/cifar-10/cifar-10-binary/cifar-10-batches-bin/data_batch_2.bin",
+                "datasets/cifar-10/cifar-10-binary/cifar-10-batches-bin/test_batch.bin",
             };
 
             var files_buffer = try allocator.alloc(CIFARFile, file_list.len);
@@ -328,17 +332,17 @@ pub fn CIFAR10Dataset(comptime T: type) type {
             };
         }
 
-        /// Frees the array of file structs.
+        // Frees the array of file structs.
         pub fn deinit(self: *Self) void {
             self.allocator.free(self.files);
         }
 
-        /// Return the total number of samples across all files.
+        // Return the total number of samples across all files.
         pub fn len(self: *Self) usize {
             return self.total_records;
         }
 
-        /// Writes the `batch_i`-th sample from the dataset to GPU buffers.
+        // Writes the `batch_i`-th sample from the dataset to GPU buffers.
         pub fn write(
             self: *Self,
             i: usize,
@@ -402,7 +406,7 @@ pub fn CIFAR10Dataset(comptime T: type) type {
             );
         }
 
-        /// Given an absolute record index, find the file and index within that file.
+        // Given an absolute record index, find the file and index within that file.
         fn findFileIndex(self: *Self, record_i: usize) [2]usize {
             var remaining = record_i;
             for (self.files, 0..) |file_meta, f_idx| {
@@ -416,7 +420,7 @@ pub fn CIFAR10Dataset(comptime T: type) type {
             return .{ last, self.files[last].record_count - 1 };
         }
 
-        /// Compute the number of records in a file.
+        // Compute the number of records in a file.
         fn computeRecordCount(filepath: []const u8) !usize {
             var file_handle = try std.fs.cwd().openFile(filepath, .{});
             defer file_handle.close();
