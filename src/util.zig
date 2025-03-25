@@ -11,6 +11,13 @@ pub fn sliceCast(comptime T: type, slice: anytype) []T {
     return casted_slice;
 }
 
+pub fn constSliceCast(comptime T: type, slice: anytype) []const T {
+    const childsize = @sizeOf(@typeInfo(@TypeOf(slice)).pointer.child);
+    std.debug.assert((slice.len * childsize) % @sizeOf(T) == 0);
+    const casted_slice: []const T = @as([*]const T, @ptrCast(@alignCast(slice.ptr)))[0 .. (slice.len * childsize) / @sizeOf(T)];
+    return casted_slice;
+}
+
 pub fn debugPrintGpuTensor(comptime T: type, gpu_tensor: *const GPUTensor(T), context: *const Context) !void {
     var host = try gpu_tensor.toHost(context.allocator, context.stream);
     defer host.deinit(context.allocator);

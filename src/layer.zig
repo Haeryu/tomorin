@@ -166,8 +166,9 @@ pub fn LayerDecorator(comptime Self: type) type {
             defer file.close();
 
             var buf_writer = std.io.bufferedWriter(file.writer());
+            const writer = buf_writer.writer();
 
-            try self.writeJsonStringField(allocator, file.writer());
+            try self.writeJsonStringField(allocator, writer);
 
             try buf_writer.flush();
         }
@@ -222,6 +223,54 @@ pub fn LayerDecorator(comptime Self: type) type {
             defer allocator.free(src);
 
             try self.readJsonStringField(allocator, src);
+        }
+
+        pub fn writeBinary(self: *Self, allocator: std.mem.Allocator, writer: anytype) !void {
+            const params = self.getParams();
+            for (params) |param| {
+                if (param) |p| {
+                    try p.writeBinary(allocator, writer);
+                }
+            }
+        }
+
+        pub fn saveBinary(self: *Self, allocator: std.mem.Allocator, sub_path: []const u8) !void {
+            var file = try std.fs.cwd().createFile(sub_path, .{});
+            defer file.close();
+
+            var buf_writer = std.io.bufferedWriter(file.writer());
+            const writer = buf_writer.writer();
+
+            try self.writeBinary(allocator, writer);
+
+            try buf_writer.flush();
+        }
+
+        pub fn readBinary(self: *Self, src: []const u8) !void {
+            const params = self.getParams();
+            var next = src;
+            for (params) |param| {
+                if (param) |p| {
+                    next = try p.readBinary(next);
+                }
+            }
+
+            if (next.len != 0) {
+                return error.DataLeft;
+            }
+        }
+
+        pub fn loadBinary(self: *Self, allocator: std.mem.Allocator, sub_path: []const u8) !void {
+            var file = try std.fs.cwd().openFile(sub_path, .{ .mode = .read_only });
+            defer file.close();
+
+            var bufreader = std.io.bufferedReader(file.reader());
+            var reader = bufreader.reader();
+
+            const src = try reader.readAllAlloc(allocator, std.math.maxInt(usize));
+            defer allocator.free(src);
+
+            try self.readBinary(src);
         }
     };
 }

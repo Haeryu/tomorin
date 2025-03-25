@@ -1278,7 +1278,7 @@ fn example12() !void {
     const x = try base_chain.createVariable(F, xv.move(), "x");
     const t = try base_chain.createVariable(F, tv.move(), "t");
 
-    const max_epoch = 100;
+    const max_epoch = 1;
     // const lr = 1.0;
 
     var model: tomorin.layer.ResNet50(F) = try .init(tomorin.datasets.CIFAR10Dataset(F).num_classes, &context, base_chain);
@@ -1297,7 +1297,8 @@ fn example12() !void {
     x.clearGrad();
     t.clearGrad();
     model.clearGrads();
-    try model.loadJsonStringField(allocator, "resnet50_out.json");
+    //  try model.loadJsonStringField(allocator, "resnet50_out.json");
+    try model.loadBinary(allocator, "resnet50_out.bin");
 
     var timer = try std.time.Timer.start();
     for (0..max_epoch) |epoch| {
@@ -1350,7 +1351,8 @@ fn example12() !void {
     }
     try stream.sync();
 
-    try model.saveJsonStringField(allocator, "resnet50_out.json");
+    //try model.saveJsonStringField(allocator, "resnet50_out.json");
+    try model.saveBinary(allocator, "resnet50_out.bin");
 }
 
 // TODO: make metaprogramming tools that makes program easier

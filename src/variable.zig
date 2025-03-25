@@ -11,6 +11,8 @@ const Chain = @import("chain.zig").Chain;
 
 const Function = @import("function.zig").Function;
 
+const constSliceCast = @import("util.zig").constSliceCast;
+
 pub fn Variable(comptime T: type) type {
     return struct {
         data: GPUTensor(T),
@@ -430,6 +432,12 @@ pub const TaggedVar = union(enum) {
         };
     }
 
+    pub fn calcLen(self: *const TaggedVar) usize {
+        return switch (self.*) {
+            inline else => |*v| v.data.base.calcLen(),
+        };
+    }
+
     pub fn writeJsonString(self: *const TaggedVar, allocator: std.mem.Allocator, writer: anytype) !void {
         switch (self.*) {
             inline else => |v| {
@@ -481,6 +489,43 @@ pub const TaggedVar = union(enum) {
                 defer host.deinit();
 
                 try v.data.writeFromHostAsync(host.value.data, 0, v.context.stream);
+            },
+        }
+    }
+
+    pub fn writeBinary(self: *TaggedVar, allocator: std.mem.Allocator, writer: anytype) !void {
+        switch (self.*) {
+            inline else => |*v| {
+                var host = try v.data.toHost(allocator, v.context.stream);
+                defer host.deinit(allocator);
+
+                try v.context.stream.sync();
+                try writer.writeAll(constSliceCast(u8, host.data));
+            },
+        }
+    }
+
+    pub fn readBinary(self: *TaggedVar, slice: []const u8) ![]const u8 {
+        switch (self.*) {
+            .bf16 => |*v| {
+                const end = v.data.calcLen() * @sizeOf(BF16);
+                try v.data.writeFromHostAsync(constSliceCast(BF16, slice[0..end]), 0, v.context.stream);
+                return slice[end..];
+            },
+            .f16 => |*v| {
+                const end = v.data.calcLen() * @sizeOf(f16);
+                try v.data.writeFromHostAsync(constSliceCast(f16, slice[0..end]), 0, v.context.stream);
+                return slice[end..];
+            },
+            .f32 => |*v| {
+                const end = v.data.calcLen() * @sizeOf(f32);
+                try v.data.writeFromHostAsync(constSliceCast(f32, slice[0..end]), 0, v.context.stream);
+                return slice[end..];
+            },
+            .f64 => |*v| {
+                const end = v.data.calcLen() * @sizeOf(f64);
+                try v.data.writeFromHostAsync(constSliceCast(f64, slice[0..end]), 0, v.context.stream);
+                return slice[end..];
             },
         }
     }
