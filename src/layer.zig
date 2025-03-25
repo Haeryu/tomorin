@@ -292,6 +292,21 @@ pub fn Linear(comptime T: type) type {
             return self;
         }
 
+        pub fn fullInit(
+            in_size: usize,
+            out_size: usize,
+            no_bias: bool,
+            winit: WInit,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            var self: Self = try .init(in_size, out_size, no_bias, winit, context, chain);
+            errdefer self.destroy();
+            self.fields.w = try self.initW();
+
+            return self;
+        }
+
         fn initW(self: *Self) !*TaggedVar {
             var w_tensor: GPUTensor(T) = try .initAsync(&.{ self.in_size.?, self.out_size }, self.context.stream);
             errdefer w_tensor.deinitAsync(self.context.stream);
@@ -387,6 +402,32 @@ pub fn MLP(
             return self;
         }
 
+        pub fn fullInit(
+            in_out_sizes: *const [layers_count][2]usize,
+            winit: Linear(T).WInit,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            var self: Self = undefined;
+            inline for (0..layers_count) |i| {
+                errdefer {
+                    inline for (0..i) |j| {
+                        @field(self.fields, std.fmt.comptimePrint("l{}", .{j})).destroy();
+                    }
+                }
+                @field(self.fields, std.fmt.comptimePrint("l{}", .{i})) = try .fullInit(
+                    in_out_sizes[i][0],
+                    in_out_sizes[i][1],
+                    false,
+                    winit,
+                    context,
+                    chain,
+                );
+            }
+
+            return self;
+        }
+
         pub fn forward(
             self: *Self,
             x: *TaggedVar,
@@ -471,6 +512,35 @@ pub fn Conv2d(comptime T: type) type {
                 self.fields.w = try self.initW();
             }
 
+            return self;
+        }
+
+        pub fn fullInit(
+            in_channels: usize,
+            out_channels: usize,
+            kernel_size: [2]usize,
+            stride: [2]usize,
+            padding: [2]usize,
+            dilation: [2]usize,
+            no_bias: bool,
+            winit: WInit,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            var self: Self = try .init(
+                in_channels,
+                out_channels,
+                kernel_size,
+                stride,
+                padding,
+                dilation,
+                no_bias,
+                winit,
+                context,
+                chain,
+            );
+            errdefer self.destroy();
+            self.fields.w = try self.initW();
             return self;
         }
 

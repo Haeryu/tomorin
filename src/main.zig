@@ -1292,6 +1292,13 @@ fn example12() !void {
     defer iter_chain.destroy();
     context.current_chain = iter_chain;
 
+    // try model.loadJsonStringField(allocator, "resnet50_out.json");
+    _ = try model.forward(x, true, iter_chain);
+    x.clearGrad();
+    t.clearGrad();
+    model.clearGrads();
+    try model.loadJsonStringField(allocator, "resnet50_out.json");
+
     var timer = try std.time.Timer.start();
     for (0..max_epoch) |epoch| {
         var sum_loss: F = 0.0;
@@ -1301,19 +1308,6 @@ fn example12() !void {
         var i: usize = 0;
         while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| : (i += 1) {
             const y = try model.forward(x, true, iter_chain);
-
-            // if (i == 1) {
-            //     try model.loadJsonStringField(allocator, "resnet50_out.json");
-            // }
-
-            //  std.debug.print("{any} {any}\n", .{ y.getShape(), t.getShape() });
-
-            // if (i == 3) {
-            //     // try dbg(F, &model.fields.conv4_1.fields.w.?.asUntaggedConst(F).data, &context);
-            // }
-
-            // try dbg(F, &t.asUntaggedConst(F).data, t.getContext());
-            // try dbg(F, &y.asUntaggedConst(F).data, y.getContext());
 
             const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
 
@@ -1342,16 +1336,6 @@ fn example12() !void {
                 host_loss.at(&.{ 0, 0 }).*,
                 acc,
             });
-
-            // if (i == 0) {
-            //     try dbg(F, &model.fields.out.fields.w.?.asUntaggedConst(F).data, &context);
-            // }
-
-            // std.debug.print("epoch {} loss {d} acc {d}\n", .{
-            //     epoch + 1,
-            //     host_loss.at(&.{ 0, 0 }).*,
-            //     acc,
-            // });
         }
 
         const len: F = @floatFromInt(data_loader.max_iter);

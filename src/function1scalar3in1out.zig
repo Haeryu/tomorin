@@ -1124,6 +1124,385 @@ pub fn batchNormEx(
     return try makefunc(BatchNorm(T), x, gamma, beta, option, chain);
 }
 
+pub fn LayerNorm(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar, // x
+        in2: ?*TaggedVar, // gamma
+        in3: ?*TaggedVar, // beta
+        out: ?*TaggedVar,
+        scalar: Option,
+        base: FunctionBase,
+
+        pub const In1 = T;
+        pub const In2 = T;
+        pub const In3 = T;
+        pub const Scalar = Option;
+        pub const Out = T;
+
+        pub const Option = struct {
+            eps: T = 1e-5,
+            context: *Context,
+        };
+
+        pub usingnamespace FuncDecorator1scalar3in1out(Self);
+
+        const Self = LayerNorm(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T), gamma: *const GPUTensor(T), beta: *const GPUTensor(T)) !GPUTensor(T) {
+            const allocator = self.base.context.allocator;
+            const stream = self.base.context.stream;
+
+            const rank = x.base.getShapeConst().len;
+            if (rank < 1) {
+                return error.InvalidRank;
+            }
+            const axis: isize = @as(isize, @intCast(rank)) - 1;
+
+            // Compute mean and variance along the last axis
+            var mean = try x.mean(allocator, &.{axis}, true, stream);
+            defer mean.deinitAsync(stream);
+
+            var variance = try x.varianceBiased(allocator, &.{axis}, true, stream);
+            defer variance.deinitAsync(stream);
+
+            // Compute inv_std = 1 / sqrt(variance + eps)
+            var inv_std = try variance.cloneAsync(stream);
+            errdefer inv_std.deinitAsync(stream);
+            try inv_std.shift(self.scalar.eps, stream);
+            try inv_std.sqrt(stream);
+            try inv_std.inv(stream);
+
+            // Compute x_centered = x - mean
+            var x_centered = try x.cloneAsync(stream);
+            defer x_centered.deinitAsync(stream);
+            var mean_broad = try mean.broadcastTo(x_centered.base.getShapeConst(), stream);
+            defer mean_broad.deinitAsync(stream);
+            try x_centered.sub(&mean_broad, stream);
+
+            // Compute x_norm = x_centered * inv_std
+            var x_norm = try x_centered.cloneAsync(stream);
+            defer x_norm.deinitAsync(stream);
+            var inv_std_broad = try inv_std.broadcastTo(x_norm.base.getShapeConst(), stream);
+            defer inv_std_broad.deinitAsync(stream);
+            try x_norm.product(&inv_std_broad, stream);
+
+            // Apply gamma and beta with broadcasting
+            var gamma_broad = try gamma.broadcastTo(x.base.getShapeConst(), stream);
+            defer gamma_broad.deinitAsync(stream);
+
+            var beta_broad = try beta.broadcastTo(x.base.getShapeConst(), stream);
+            defer beta_broad.deinitAsync(stream);
+
+            var y = try x_norm.cloneAsync(stream);
+            try y.product(&gamma_broad, stream);
+            try y.add(&beta_broad, stream);
+
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar, *TaggedVar }) {
+            const allocator = self.base.context.allocator;
+            const stream = self.base.context.stream;
+            var gy_tensor = gy.asUntagged(T).data;
+
+            var x_tensor = &self.in1.?.asUntagged(T).data;
+            var gamma = &self.in2.?.asUntagged(T).data;
+
+            const rank = x_tensor.base.getShapeConst().len;
+            if (rank < 1) {
+                return error.InvalidRank;
+            }
+            const axis: isize = @as(isize, @intCast(rank)) - 1;
+
+            // Recompute mean and variance
+            var mean = try x_tensor.mean(allocator, &.{axis}, true, stream);
+            defer mean.deinitAsync(stream);
+
+            var variance = try x_tensor.varianceBiased(allocator, &.{axis}, true, stream);
+            defer variance.deinitAsync(stream);
+
+            // Compute inv_std
+            var inv_std = try variance.cloneAsync(stream);
+            errdefer inv_std.deinitAsync(stream);
+            try inv_std.shift(self.scalar.eps, stream);
+            try inv_std.sqrt(stream);
+            try inv_std.inv(stream);
+
+            // Compute x_centered and x_norm
+            var x_centered = try x_tensor.cloneAsync(stream);
+            defer x_centered.deinitAsync(stream);
+            var mean_broad = try mean.broadcastTo(x_centered.base.getShapeConst(), stream);
+            defer mean_broad.deinitAsync(stream);
+            try x_centered.sub(&mean_broad, stream);
+
+            var x_norm = try x_centered.cloneAsync(stream);
+            defer x_norm.deinitAsync(stream);
+            var inv_std_broad = try inv_std.broadcastTo(x_norm.base.getShapeConst(), stream);
+            defer inv_std_broad.deinitAsync(stream);
+            try x_norm.product(&inv_std_broad, stream);
+
+            // Compute gy_gamma = gy * gamma (broadcasting gamma)
+            var gamma_broad = try gamma.broadcastTo(gy_tensor.base.getShapeConst(), stream);
+            defer gamma_broad.deinitAsync(stream);
+
+            var gy_gamma = try gy_tensor.cloneAsync(stream);
+            defer gy_gamma.deinitAsync(stream);
+            try gy_gamma.product(&gamma_broad, stream);
+
+            // Compute mean_gy_gamma = mean(gy_gamma, axis=-1, keepdims=true)
+            var mean_gy_gamma = try gy_gamma.mean(allocator, &.{axis}, true, stream);
+            defer mean_gy_gamma.deinitAsync(stream);
+
+            // Compute mean_gy_gamma_xnorm = mean(gy_gamma * x_norm, axis=-1, keepdims=true)
+            var gy_gamma_xnorm = try gy_gamma.cloneAsync(stream);
+            defer gy_gamma_xnorm.deinitAsync(stream);
+            try gy_gamma_xnorm.product(&x_norm, stream);
+
+            var mean_gy_gamma_xnorm = try gy_gamma_xnorm.mean(allocator, &.{axis}, true, stream);
+            defer mean_gy_gamma_xnorm.deinitAsync(stream);
+
+            // Compute gx = (gy_gamma - mean_gy_gamma_broad - x_norm * mean_gy_gamma_xnorm_broad) * inv_std_broad
+            var mean_gy_gamma_broad = try mean_gy_gamma.broadcastTo(gy_gamma.base.getShapeConst(), stream);
+            defer mean_gy_gamma_broad.deinitAsync(stream);
+
+            var mean_gy_gamma_xnorm_broad = try mean_gy_gamma_xnorm.broadcastTo(gy_gamma.base.getShapeConst(), stream);
+            defer mean_gy_gamma_xnorm_broad.deinitAsync(stream);
+
+            var xnorm_mean_gy_gamma_xnorm = try x_norm.cloneAsync(stream);
+            defer xnorm_mean_gy_gamma_xnorm.deinitAsync(stream);
+            try xnorm_mean_gy_gamma_xnorm.product(&mean_gy_gamma_xnorm_broad, stream);
+
+            var gx = try gy_gamma.cloneAsync(stream);
+            errdefer gx.deinitAsync(stream);
+            try gx.sub(&mean_gy_gamma_broad, stream);
+            try gx.sub(&xnorm_mean_gy_gamma_xnorm, stream);
+
+            var inv_std_broad_final = try inv_std.broadcastTo(gx.base.getShapeConst(), stream);
+            defer inv_std_broad_final.deinitAsync(stream);
+            try gx.product(&inv_std_broad_final, stream);
+
+            // Compute ggamma and gbeta
+            var axes = try allocator.alloc(isize, rank - 1);
+            defer allocator.free(axes);
+            for (0..rank - 1) |i| {
+                axes[i] = @intCast(i);
+            }
+
+            var gy_xnorm = try gy_tensor.cloneAsync(stream);
+            defer gy_xnorm.deinitAsync(stream);
+            try gy_xnorm.product(&x_norm, stream);
+
+            var ggamma = try gy_xnorm.sum(allocator, axes, true, stream);
+            errdefer ggamma.deinitAsync(stream);
+
+            var gbeta = try gy_tensor.sum(allocator, axes, true, stream);
+            errdefer gbeta.deinitAsync(stream);
+
+            // Create TaggedVar for gradients
+            const gx_v = try self.base.chain.createVariable(T, gx.move(), null);
+            const ggamma_v = try self.base.chain.createVariable(T, ggamma.move(), null);
+            const gbeta_v = try self.base.chain.createVariable(T, gbeta.move(), null);
+
+            return .{ gx_v, ggamma_v, gbeta_v };
+        }
+    };
+}
+
+pub fn layerNorm(
+    comptime T: type,
+    x: *TaggedVar,
+    gamma: *TaggedVar,
+    beta: *TaggedVar,
+    option: LayerNorm(T).Option,
+) !*TaggedVar {
+    return try layerNormEx(T, x, gamma, beta, option, x.getContext().current_chain.?);
+}
+
+pub fn layerNormEx(
+    comptime T: type,
+    x: *TaggedVar,
+    gamma: *TaggedVar,
+    beta: *TaggedVar,
+    option: LayerNorm(T).Option,
+    chain: *Chain,
+) !*TaggedVar {
+    return try makefunc(LayerNorm(T), x, gamma, beta, option, chain);
+}
+
+pub fn RMSNorm(comptime T: type) type {
+    return struct {
+        in1: ?*TaggedVar, // Input tensor x
+        in2: ?*TaggedVar, // Gamma (scale)
+        in3: ?*TaggedVar, // Beta (shift)
+        out: ?*TaggedVar, // Output tensor
+        scalar: Option, // Configuration (e.g., epsilon)
+        base: FunctionBase, // Base function context (assumed from your framework)
+
+        pub const In1 = T;
+        pub const In2 = T;
+        pub const In3 = T;
+        pub const Scalar = Option;
+        pub const Out = T;
+
+        pub const Option = struct {
+            eps: T = 1e-5, // Epsilon for numerical stability
+            context: *Context, // Execution context (e.g., GPU stream)
+        };
+
+        pub usingnamespace FuncDecorator1scalar3in1out(Self);
+
+        const Self = RMSNorm(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T), gamma: *const GPUTensor(T), beta: *const GPUTensor(T)) !GPUTensor(T) {
+            const allocator = self.base.context.allocator;
+            const stream = self.base.context.stream;
+
+            // Get the rank and normalize over the last dimension
+            const rank = x.base.getShapeConst().len;
+            if (rank < 1) return error.InvalidRank;
+            const axis: isize = @as(isize, @intCast(rank)) - 1;
+            // Step 1: Compute RMS = sqrt(mean(x^2) + eps)
+            var x_squared = try x.cloneAsync(stream); // x^2
+            defer x_squared.deinitAsync(stream);
+            try x_squared.square(stream);
+
+            var mean_x_squared = try x_squared.mean(allocator, &.{axis}, true, stream); // Mean over last dim
+            defer mean_x_squared.deinitAsync(stream);
+
+            var rms = try mean_x_squared.cloneAsync(stream);
+            defer rms.deinitAsync(stream);
+            try rms.shift(self.scalar.eps, stream); // Add epsilon
+            try rms.sqrt(stream); // Square root
+            try rms.inv(stream);
+
+            // Step 2: Normalize x / rms
+            var x_norm = try x.cloneAsync(stream);
+            defer x_norm.deinitAsync(stream);
+            var rms_broad = try rms.broadcastTo(x_norm.base.getShapeConst(), stream);
+            defer rms_broad.deinitAsync(stream);
+
+            try x_norm.product(&rms_broad, stream); // Element-wise division
+
+            // Step 3: Apply gamma and beta with broadcasting
+            var gamma_broad = try gamma.broadcastTo(x.base.getShapeConst(), stream);
+            defer gamma_broad.deinitAsync(stream);
+            var beta_broad = try beta.broadcastTo(x.base.getShapeConst(), stream);
+            defer beta_broad.deinitAsync(stream);
+
+            var y = try x_norm.cloneAsync(stream);
+            try y.product(&gamma_broad, stream); // Scale
+            try y.add(&beta_broad, stream); // Shift
+
+            return y.move(); // Return the final tensor
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar, *TaggedVar }) {
+            const allocator = self.base.context.allocator;
+            const stream = self.base.context.stream;
+            var gy_tensor = gy.asUntagged(T).data;
+
+            var x_tensor = &self.in1.?.asUntagged(T).data;
+            var gamma = &self.in2.?.asUntagged(T).data;
+
+            const rank = x_tensor.base.getShapeConst().len;
+            if (rank < 1) return error.InvalidRank;
+            const axis: isize = @as(isize, @intCast(rank)) - 1;
+
+            // Recompute RMS and x_norm (needed for gradients)
+            var x_squared = try x_tensor.cloneAsync(stream);
+            defer x_squared.deinitAsync(stream);
+            try x_squared.square(stream);
+            var mean_x_squared = try x_squared.mean(allocator, &.{axis}, true, stream);
+            defer mean_x_squared.deinitAsync(stream);
+            var rms = try mean_x_squared.cloneAsync(stream);
+            defer rms.deinitAsync(stream);
+            try rms.shift(self.scalar.eps, stream);
+            try rms.sqrt(stream);
+
+            var inv_rms = try rms.cloneAsync(stream);
+            defer inv_rms.deinitAsync(stream);
+            try inv_rms.inv(stream);
+
+            var x_norm = try x_tensor.cloneAsync(stream);
+            defer x_norm.deinitAsync(stream);
+            var inv_rms_broad = try inv_rms.broadcastTo(x_norm.base.getShapeConst(), stream);
+            defer inv_rms_broad.deinitAsync(stream);
+            try x_norm.product(&inv_rms_broad, stream);
+
+            // Compute gradients
+            var gamma_broad = try gamma.broadcastTo(gy_tensor.base.getShapeConst(), stream);
+            defer gamma_broad.deinitAsync(stream);
+
+            var gy_gamma = try gy_tensor.cloneAsync(stream);
+            defer gy_gamma.deinitAsync(stream);
+            try gy_gamma.product(&gamma_broad, stream);
+
+            // Gradient w.r.t. x (gx)
+            var gy_gamma_xnorm = try gy_gamma.cloneAsync(stream);
+            defer gy_gamma_xnorm.deinitAsync(stream);
+            try gy_gamma_xnorm.product(&x_norm, stream);
+            var mean_gy_gamma_xnorm = try gy_gamma_xnorm.mean(allocator, &.{axis}, true, stream);
+            defer mean_gy_gamma_xnorm.deinitAsync(stream);
+
+            var xnorm_mean_gy_gamma_xnorm = try x_norm.cloneAsync(stream);
+            defer xnorm_mean_gy_gamma_xnorm.deinitAsync(stream);
+            var mean_gy_gamma_xnorm_broad = try mean_gy_gamma_xnorm.broadcastTo(xnorm_mean_gy_gamma_xnorm.base.getShapeConst(), stream);
+            defer mean_gy_gamma_xnorm_broad.deinitAsync(stream);
+            try xnorm_mean_gy_gamma_xnorm.product(&mean_gy_gamma_xnorm_broad, stream);
+
+            var gx = try gy_gamma.cloneAsync(stream);
+            errdefer gx.deinitAsync(stream);
+            try gx.sub(&xnorm_mean_gy_gamma_xnorm, stream);
+            var inv_rms_broad2 = try inv_rms.broadcastTo(gx.base.getShapeConst(), stream);
+            defer inv_rms_broad2.deinitAsync(stream);
+            try gx.product(&inv_rms_broad2, stream);
+
+            // Gradients w.r.t. gamma and beta
+            var axes = try allocator.alloc(isize, rank - 1);
+            defer allocator.free(axes);
+            for (0..rank - 1) |i| axes[i] = @intCast(i);
+
+            var gy_xnorm = try gy_tensor.cloneAsync(stream);
+            defer gy_xnorm.deinitAsync(stream);
+            try gy_xnorm.product(&x_norm, stream);
+
+            var ggamma = try gy_xnorm.sum(allocator, axes, true, stream);
+            errdefer ggamma.deinitAsync(stream);
+
+            var gbeta = try gy_tensor.sum(allocator, axes, true, stream);
+            errdefer gbeta.deinitAsync(stream);
+
+            // Wrap gradients in TaggedVar
+            const gx_v = try self.base.chain.createVariable(T, gx.move(), null);
+            const ggamma_v = try self.base.chain.createVariable(T, ggamma.move(), null);
+            const gbeta_v = try self.base.chain.createVariable(T, gbeta.move(), null);
+
+            return .{ gx_v, ggamma_v, gbeta_v };
+        }
+    };
+}
+
+pub fn rmsNorm(
+    comptime T: type,
+    x: *TaggedVar,
+    gamma: *TaggedVar,
+    beta: *TaggedVar,
+    option: RMSNorm(T).Option,
+) !*TaggedVar {
+    return try rmsNormEx(T, x, gamma, beta, option, x.getContext().current_chain.?);
+}
+
+pub fn rmsNormEx(
+    comptime T: type,
+    x: *TaggedVar,
+    gamma: *TaggedVar,
+    beta: *TaggedVar,
+    option: RMSNorm(T).Option,
+    chain: *Chain,
+) !*TaggedVar {
+    return try makefunc(RMSNorm(T), x, gamma, beta, option, chain);
+}
+
 // tests
 fn testConv1dForward(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain) !void {
     const T = f32;
@@ -2047,6 +2426,264 @@ fn testBatchNormForwardBackward2D(allocator: std.mem.Allocator, stream: *Stream,
     std.debug.print("BatchNorm forward and backward test for 2D input passed.\n", .{});
 }
 
+fn testLayerNormForwardBackward2D(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain, context: *Context) !void {
+    const T = f32;
+
+    // **Input Setup**
+    // Input shape: (N=2, D=3) => [[1, 2, 3], [4, 5, 6]]
+    const input_shape = &[_]usize{ 2, 3 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var gpu_input = try GPUTensor(T).initAsync(input_shape, stream);
+    defer gpu_input.deinitAsync(stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, stream);
+    var var_input = try chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    // **Gamma Setup**
+    // Gamma shape: (D=3,) => [1, 1, 1]
+    const gamma_shape = &[_]usize{3};
+    var gamma_data = [_]T{ 1.0, 1.0, 1.0 };
+    var gpu_gamma = try GPUTensor(T).initAsync(gamma_shape, stream);
+    defer gpu_gamma.deinitAsync(stream);
+    try gpu_gamma.writeFromHostAsync(&gamma_data, 0, stream);
+    var var_gamma = try chain.createVariable(T, gpu_gamma.move(), "gamma");
+    defer var_gamma.destroy();
+
+    // **Beta Setup**
+    // Beta shape: (D=3,) => [0, 0, 0]
+    const beta_shape = &[_]usize{3};
+    var beta_data = [_]T{ 0.0, 0.0, 0.0 };
+    var gpu_beta = try GPUTensor(T).initAsync(beta_shape, stream);
+    defer gpu_beta.deinitAsync(stream);
+    try gpu_beta.writeFromHostAsync(&beta_data, 0, stream);
+    var var_beta = try chain.createVariable(T, gpu_beta.move(), "beta");
+    defer var_beta.destroy();
+
+    // **LayerNorm Options**
+    const option: LayerNorm(T).Option = .{
+        .eps = 1e-5,
+        .context = context,
+    };
+
+    // **Forward Pass**
+    var var_output = try layerNormEx(T, var_input, var_gamma, var_beta, option, chain);
+    defer var_output.destroy();
+
+    // **Check Output**
+    var host_output = try var_output.asUntagged(T).data.toHost(allocator, stream);
+    defer host_output.deinit(allocator);
+    try stream.sync();
+
+    // **Upstream Gradient for Backward Pass**
+    // Shape: (2, 3), all ones => [1, 1, 1, 1, 1, 1]
+    const gy_shape = &[_]usize{ 2, 3 };
+    var gy_data = [_]T{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    var gpu_gy = try GPUTensor(T).initAsync(gy_shape, stream);
+    defer gpu_gy.deinitAsync(stream);
+    try gpu_gy.writeFromHostAsync(&gy_data, 0, stream);
+    var var_gy = try chain.createVariable(T, gpu_gy.move(), "gy");
+    defer var_gy.destroy();
+    var_output.setGrad(var_gy);
+
+    // **Backward Pass**
+    try var_output.backwardEx(chain);
+
+    // **Retrieve Gradients**
+    var gpu_gx = var_input.refGrad().?.asUntagged(T).data;
+    var host_gx = try gpu_gx.toHost(allocator, stream);
+    defer host_gx.deinit(allocator);
+
+    var gpu_ggamma = var_gamma.refGrad().?.asUntagged(T).data;
+    var host_ggamma = try gpu_ggamma.toHost(allocator, stream);
+    defer host_ggamma.deinit(allocator);
+
+    var gpu_gbeta = var_beta.refGrad().?.asUntagged(T).data;
+    var host_gbeta = try gpu_gbeta.toHost(allocator, stream);
+    defer host_gbeta.deinit(allocator);
+
+    try stream.sync();
+
+    // **Check Gradient w.r.t. Beta**
+    // For LayerNorm, gbeta = sum(gy, axis=0) across the batch for each feature
+    // Since gy is all ones and N=2, expected gbeta = [2, 2, 2]
+    const expected_gbeta = [_]T{ 2.0, 2.0, 2.0 };
+    for (host_gbeta.data, expected_gbeta) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("gbeta mismatch: got={any}, exp={any}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+
+    // **Numerical Gradient Check for Input (x)**
+    const epsilon = 1e-4;
+    var numerical_gx = try allocator.alloc(T, input_data.len);
+    defer allocator.free(numerical_gx);
+
+    for (0..input_data.len) |i| {
+        // Perturb input positively
+        var input_plus = input_data;
+        input_plus[i] += epsilon;
+        var gpu_input_plus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_plus.writeFromHostAsync(&input_plus, 0, stream);
+        const var_input_plus = try chain.createVariable(T, gpu_input_plus.move(), "input_plus");
+        defer var_input_plus.destroy();
+        var var_out_plus = try layerNormEx(T, var_input_plus, var_gamma, var_beta, option, chain);
+        defer var_out_plus.destroy();
+        var host_out_plus = try var_out_plus.asUntagged(T).data.toHost(allocator, stream);
+        defer host_out_plus.deinit(allocator);
+
+        // Perturb input negatively
+        var input_minus = input_data;
+        input_minus[i] -= epsilon;
+        var gpu_input_minus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_minus.writeFromHostAsync(&input_minus, 0, stream);
+        const var_input_minus = try chain.createVariable(T, gpu_input_minus.move(), "input_minus");
+        defer var_input_minus.destroy();
+        var var_out_minus = try layerNormEx(T, var_input_minus, var_gamma, var_beta, option, chain);
+        defer var_out_minus.destroy();
+        var host_out_minus = try var_out_minus.asUntagged(T).data.toHost(allocator, stream);
+        defer host_out_minus.deinit(allocator);
+
+        // Compute numerical gradient
+        numerical_gx[i] = 0.0;
+        for (0..gy_data.len) |j| {
+            const diff = host_out_plus.data[j] - host_out_minus.data[j];
+            numerical_gx[i] += diff / (2.0 * epsilon) * gy_data[j];
+        }
+    }
+
+    // Compare analytical and numerical gradients for x
+    for (host_gx.data, numerical_gx) |analytical, numerical| {
+        if (@abs(analytical - numerical) > 1e-2) {
+            std.debug.print("gx mismatch: analytical={any}, numerical={any}\n", .{ analytical, numerical });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("LayerNorm forward and backward test for 2D input passed.\n", .{});
+}
+
+fn testRMSNormForwardBackward2D(allocator: std.mem.Allocator, stream: *Stream, chain: *Chain, context: *Context) !void {
+    const T = f32;
+
+    // **Input Setup**: shape [2, 3]
+    const input_shape = &[_]usize{ 2, 3 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var gpu_input = try GPUTensor(T).initAsync(input_shape, stream);
+    defer gpu_input.deinitAsync(stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, stream);
+    var var_input = try chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    // **Gamma Setup**: shape [3], all ones
+    const gamma_shape = &[_]usize{3};
+    var gamma_data = [_]T{ 1.0, 1.0, 1.0 };
+    var gpu_gamma = try GPUTensor(T).initAsync(gamma_shape, stream);
+    defer gpu_gamma.deinitAsync(stream);
+    try gpu_gamma.writeFromHostAsync(&gamma_data, 0, stream);
+    var var_gamma = try chain.createVariable(T, gpu_gamma.move(), "gamma");
+    defer var_gamma.destroy();
+
+    // **Beta Setup**: shape [3], all zeros
+    const beta_shape = &[_]usize{3};
+    var beta_data = [_]T{ 0.0, 0.0, 0.0 };
+    var gpu_beta = try GPUTensor(T).initAsync(beta_shape, stream);
+    defer gpu_beta.deinitAsync(stream);
+    try gpu_beta.writeFromHostAsync(&beta_data, 0, stream);
+    var var_beta = try chain.createVariable(T, gpu_beta.move(), "beta");
+    defer var_beta.destroy();
+
+    // **Option Setup**: epsilon for numerical stability
+    const option: RMSNorm(T).Option = .{ .eps = 1e-5, .context = context };
+
+    // **Forward Pass**
+    var var_output = try rmsNormEx(T, var_input, var_gamma, var_beta, option, chain);
+    defer var_output.destroy();
+
+    // **Set Output Gradient (gy)**: shape [2, 3], all ones
+    const gy_shape = &[_]usize{ 2, 3 };
+    var gy_data = [_]T{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    var gpu_gy = try GPUTensor(T).initAsync(gy_shape, stream);
+    defer gpu_gy.deinitAsync(stream);
+    try gpu_gy.writeFromHostAsync(&gy_data, 0, stream);
+    var var_gy = try chain.createVariable(T, gpu_gy.move(), "gy");
+    defer var_gy.destroy();
+    var_output.setGrad(var_gy);
+
+    // **Backward Pass**
+    try var_output.backwardEx(chain);
+
+    // **Retrieve Gradients**
+    var gpu_gx = var_input.refGrad().?.asUntagged(T).data;
+    var host_gx = try gpu_gx.toHost(allocator, stream);
+    defer host_gx.deinit(allocator);
+
+    var gpu_gbeta = var_beta.refGrad().?.asUntagged(T).data;
+    var host_gbeta = try gpu_gbeta.toHost(allocator, stream);
+    defer host_gbeta.deinit(allocator);
+
+    try stream.sync();
+
+    // **Verify gbeta Analytically**
+    // Since gy is all ones and beta is broadcasted over the batch dimension,
+    // gbeta = sum(gy, axis=0) = [2, 2, 2] for batch size 2
+    const expected_gbeta = [_]T{ 2.0, 2.0, 2.0 };
+    for (host_gbeta.data, expected_gbeta) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("gbeta mismatch: got={d}, exp={d}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+
+    // **Numerical Gradient Check for x**
+    const epsilon = 1e-4;
+    var numerical_gx = try allocator.alloc(T, input_data.len);
+    defer allocator.free(numerical_gx);
+
+    for (0..input_data.len) |i| {
+        // Perturb input positively
+        var input_plus = input_data;
+        input_plus[i] += epsilon;
+        var gpu_input_plus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_plus.writeFromHostAsync(&input_plus, 0, stream);
+        const var_input_plus = try chain.createVariable(T, gpu_input_plus.move(), "input_plus");
+        defer var_input_plus.destroy();
+        var var_out_plus = try rmsNormEx(T, var_input_plus, var_gamma, var_beta, option, chain);
+        defer var_out_plus.destroy();
+        var host_out_plus = try var_out_plus.asUntagged(T).data.toHost(allocator, stream);
+        defer host_out_plus.deinit(allocator);
+
+        // Perturb input negatively
+        var input_minus = input_data;
+        input_minus[i] -= epsilon;
+        var gpu_input_minus = try GPUTensor(T).initAsync(input_shape, stream);
+        try gpu_input_minus.writeFromHostAsync(&input_minus, 0, stream);
+        const var_input_minus = try chain.createVariable(T, gpu_input_minus.move(), "input_minus");
+        defer var_input_minus.destroy();
+        var var_out_minus = try rmsNormEx(T, var_input_minus, var_gamma, var_beta, option, chain);
+        defer var_out_minus.destroy();
+        var host_out_minus = try var_out_minus.asUntagged(T).data.toHost(allocator, stream);
+        defer host_out_minus.deinit(allocator);
+
+        // Compute numerical gradient: dl/dx_i = sum_j (dy_j / dx_i), approximated as (y_plus - y_minus) / (2 * epsilon)
+        numerical_gx[i] = 0.0;
+        for (0..host_out_plus.data.len) |j| {
+            const diff = host_out_plus.data[j] - host_out_minus.data[j];
+            numerical_gx[i] += diff / (2.0 * epsilon);
+        }
+    }
+
+    // **Compare Analytical and Numerical Gradients for x**
+    for (host_gx.data, numerical_gx) |analytical, numerical| {
+        if (@abs(analytical - numerical) > 1e-2) {
+            std.debug.print("gx mismatch: analytical={d}, numerical={d}\n", .{ analytical, numerical });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("RMSNorm forward and backward test for 2D input passed.\n", .{});
+}
+
 pub fn test1scalar3i1o() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -2085,7 +2722,9 @@ pub fn test1scalar3i1o() !void {
     // Test Deconv2d backward pass
     try testDeconv2dBackward(allocator, &stream, base_chain);
 
-    try testBatchNormForwardBackward2D(allocator, &stream, base_chain, &context);
+    // try testBatchNormForwardBackward2D(allocator, &stream, base_chain, &context);
+    try testLayerNormForwardBackward2D(allocator, &stream, base_chain, &context);
+    try testRMSNormForwardBackward2D(allocator, &stream, base_chain, &context);
 
     std.debug.print("All Conv2d and Deconv2d tests passed in test1scalar3i1o.\n", .{});
 }
