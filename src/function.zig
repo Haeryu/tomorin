@@ -109,6 +109,8 @@ pub usingnamespace @import("function1scalar2in1out.zig");
 pub usingnamespace @import("function1scalar3in1out.zig");
 pub usingnamespace @import("function3in1out.zig");
 pub usingnamespace @import("function1tensor1slice1in1out.zig");
+pub usingnamespace @import("function1scalar1inmanyout.zig");
+pub usingnamespace @import("function1scalarmanyin1out.zig");
 
 // pub fn matyas(comptime T: type, x: VarKey, y: VarKey) !VarKey {
 //     const x_y_sq = try @This().add(T, try @This().square(T, x), try @This().square(T, y));
@@ -475,4 +477,6 @@ pub fn testFunctions() !void {
     try @This().test3i1o();
     try @This().test1scalar2i1o();
     try @This().test1scalar3i1o();
+    try @This().test1s1imanyo();
+    try @This().testManyin1out();
 }

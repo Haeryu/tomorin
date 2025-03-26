@@ -16,6 +16,7 @@ const maxPoolingEx = function.maxPoolingEx;
 const reshapeEx = function.reshapeEx;
 const dropoutEx = function.dropoutEx;
 const batchNormEx = function.batchNormEx;
+const layerNormEx = function.layerNormEx;
 const averagePoolingEx = function.averagePoolingEx;
 const addEx = function.addEx;
 
@@ -1071,6 +1072,113 @@ pub fn BatchNorm(comptime T: type) type {
     };
 }
 
+pub fn LayerNorm(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{
+                "gamma",
+                "beta",
+            },
+            &.{},
+        ),
+        context: *Context,
+        chain: *Chain,
+        const Self = @This();
+
+        pub fn init(
+            context: *Context,
+            chain: *Chain,
+        ) Self {
+            return .{
+                .fields = .{
+                    .gamma = null,
+                    .beta = null,
+                },
+                .context = context,
+                .chain = chain,
+            };
+        }
+
+        pub fn initParams(self: *Self, x: *TaggedVar) !void {
+            const allocator = self.context.allocator;
+            const x_shape = x.getShape();
+            var axes: []const isize = undefined;
+            if (x_shape.len == 4) {
+                axes = &.{ 0, 2, 3 };
+            } else if (x_shape.len == 2) {
+                axes = &.{0};
+            } else {
+                return error.UnsupportedInputShape;
+            }
+            const keepdims = try GPUTensor(T).computeOutShape(allocator, x_shape, axes, true);
+            defer allocator.free(keepdims);
+
+            if (self.fields.gamma == null) {
+                var one: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer one.deinitAsync(self.context.stream);
+                try one.fill(1.0, self.context.stream);
+
+                self.fields.gamma = try self.chain.createVariable(T, one.move(), "gamma");
+            }
+            if (self.fields.beta == null) {
+                var zero: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer zero.deinitAsync(self.context.stream);
+                try zero.fill(0.0, self.context.stream);
+
+                self.fields.beta = try self.chain.createVariable(T, zero.move(), "beta");
+            }
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, eps: T, chain: *Chain) !*TaggedVar {
+            if (self.fields.avg_mean == null) {
+                try self.initParams(x);
+            }
+
+            return try layerNormEx(
+                T,
+                x,
+                self.fields.gamma.?,
+                self.fields.beta.?,
+                .{
+                    .eps = eps,
+                    .context = self.context,
+                },
+                chain,
+            );
+        }
+    };
+}
+
+pub fn Dropout(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{},
+            &.{},
+        ),
+        dropout_ratio: T,
+        const Self = @This();
+
+        pub fn init(dropout_ratio: T) Self {
+            return .{
+                .fields = .{},
+                .dropout_ratio = dropout_ratio,
+            };
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, train: bool, chain: *Chain) !*TaggedVar {
+            return try dropoutEx(
+                T,
+                x,
+                self.dropout_ratio,
+                train,
+                chain,
+            );
+        }
+    };
+}
+
 pub fn ResNet(comptime T: type, comptime layers_count: comptime_int) type {
     return struct {
         pub usingnamespace LayerDecorator(Self);
@@ -1213,7 +1321,7 @@ fn globalAvgPooling(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar 
     return t;
 }
 
-pub fn BuildingBlock(comptime T: type, comptime layers_count: comptime_int) type {
+fn BuildingBlock(comptime T: type, comptime layers_count: comptime_int) type {
     return struct {
         pub usingnamespace LayerDecorator(Self);
         fields: LayerFieldsFactory(
@@ -1284,7 +1392,7 @@ pub fn BuildingBlock(comptime T: type, comptime layers_count: comptime_int) type
     };
 }
 
-pub fn BottleneckA(comptime T: type) type {
+fn BottleneckA(comptime T: type) type {
     return struct {
         pub usingnamespace LayerDecorator(Self);
         fields: LayerFieldsFactory(
@@ -1408,7 +1516,7 @@ pub fn BottleneckA(comptime T: type) type {
     };
 }
 
-pub fn BottleneckB(comptime T: type) type {
+fn BottleneckB(comptime T: type) type {
     return struct {
         pub usingnamespace LayerDecorator(Self);
         fields: LayerFieldsFactory(

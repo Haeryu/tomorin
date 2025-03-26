@@ -1281,7 +1281,11 @@ fn example12() !void {
     const max_epoch = 1;
     // const lr = 1.0;
 
-    var model: tomorin.layer.ResNet50(F) = try .init(tomorin.datasets.CIFAR10Dataset(F).num_classes, &context, base_chain);
+    var model: tomorin.layer.ResNet50(F) = try .init(
+        tomorin.datasets.CIFAR10Dataset(F).num_classes,
+        &context,
+        base_chain,
+    );
     defer model.destroy();
 
     //var optimizer: tomorin.optimizer.SGD(F) = try .init(.{ .lr = 0.02 }, &context);
@@ -1359,6 +1363,6 @@ fn example12() !void {
 pub fn main() !void {
     // try example4();
     // try example9();
-    try example12();
-    // try function.testFunctions();
+    //try example12();
+    try function.testFunctions();
 }
