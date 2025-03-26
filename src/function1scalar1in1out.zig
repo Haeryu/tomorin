@@ -437,6 +437,54 @@ pub fn maskedFillEx(comptime T: type, x: *TaggedVar, scalar: MaskedFill(T).Scala
     return try makefunc(MaskedFill(T), x, scalar, chain);
 }
 
+pub fn Embed(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar, // Weight matrix (learnable parameter)
+        out: ?*TaggedVar, // Output tensor (embedded vectors)
+        scalar: Scalar, // Indices tensor as scalar parameter
+        base: FunctionBase,
+
+        // Scalar parameter containing the indices
+        pub const Scalar = *TaggedVar;
+        pub const In = T; // Input type (weight matrix elements)
+        pub const Out = T; // Output type (embedding vectors)
+
+        // Use the decorator for 1 input, 1 scalar, 1 output
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
+
+        const Self = Embed(T);
+
+        // Forward pass: Perform embedding lookup
+        pub fn forward(self: *Self, weight: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            var output = try weight.embeddingForward(&self.scalar.asUntagged(usize).data, context.stream);
+            errdefer output.deinitAsync(context.stream);
+            return output.move();
+        }
+
+        // Backward pass: Compute gradient with respect to weight
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const chain = self.base.chain;
+            const stream = chain.context.stream;
+
+            const num_embeddings = self.in.?.getShape()[0];
+            var grad_weight = try gy.asUntagged(T).data.embeddingBackward(&self.scalar.asUntagged(usize).data, num_embeddings, stream);
+            errdefer grad_weight.deinitAsync(stream);
+
+            // Create a TaggedVar for the gradient
+            return try chain.createVariable(T, grad_weight.move(), null);
+        }
+    };
+}
+
+pub fn embed(comptime T: type, w: *TaggedVar, indices: *TaggedVar) !*TaggedVar {
+    return try embedEx(T, w, indices, w.getContext().current_chain.?);
+}
+
+pub fn embedEx(comptime T: type, w: *TaggedVar, indices: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Embed(T), w, indices, chain);
+}
+
 // tests
 fn testShift(allocator: std.mem.Allocator) !void {
     var stream = try Stream.create();
@@ -905,6 +953,111 @@ fn testMaskedFill(allocator: std.mem.Allocator) !void {
 
     std.debug.print("testMaskedFill passed successfully.\n", .{});
 }
+fn testEmbed(allocator: std.mem.Allocator) !void {
+    // 1) Setup CUDA and stream
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    // Create a chain
+    const chain = try context.createChain();
+    context.current_chain = chain;
+    defer chain.clear();
+
+    // 2) Construct a small embedding weight on the host
+    //    shape: [num_embeddings=4, embedding_dim=3].
+    const T = f32;
+    const weight_data = [_]T{
+        // row 0 (embedding #0)
+        1.0,  2.0,  3.0,
+        // row 1 (embedding #1)
+        4.0,  5.0,  6.0,
+        // row 2 (embedding #2)
+        7.0,  8.0,  9.0,
+        // row 3 (embedding #3)
+        10.0, 11.0, 12.0,
+    };
+    const weight_shape = &[_]usize{ 4, 3 };
+
+    var gpu_weight = try GPUTensor(T).initAsync(weight_shape, &stream);
+    defer gpu_weight.deinitAsync(&stream);
+    try gpu_weight.writeFromHostAsync(&weight_data, 0, &stream);
+
+    var var_weight = try chain.createVariable(T, gpu_weight.move(), "weight");
+    defer var_weight.destroy();
+
+    // 3) Construct an indices tensor on the host
+    //    shape: [batch_size=2, sequence_length=2].
+    //    The indices: [[0,1], [2,3]]
+    const idx_data = [_]usize{ 0, 1, 2, 3 };
+    const idx_shape = &[_]usize{ 2, 2 };
+
+    var gpu_indices = try GPUTensor(usize).initAsync(idx_shape, &stream);
+    defer gpu_indices.deinitAsync(&stream);
+    try gpu_indices.writeFromHostAsync(&idx_data, 0, &stream);
+
+    var var_indices = try chain.createVariable(usize, gpu_indices.move(), "indices");
+    defer var_indices.destroy();
+
+    // 4) Call embedEx to do the forward pass
+    //    The result should have shape [2, 2, 3].
+    var var_output = try embedEx(T, var_weight, var_indices, chain);
+    defer var_output.destroy();
+
+    // Read the output back to host
+    var gpu_output = var_output.asUntagged(T).data;
+    var host_output = try gpu_output.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // 5) Check forward correctness
+    //    We expect:
+    //    row0 col0 => embedding #0 => [1, 2, 3]
+    //         col1 => embedding #1 => [4, 5, 6]
+    //    row1 col0 => embedding #2 => [7, 8, 9]
+    //         col1 => embedding #3 => [10,11,12]
+    const expected_fwd = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
+    for (host_output.data, expected_fwd, 0..) |got, expe, i| {
+        if (@abs(got - expe) > 1e-6) {
+            std.debug.print("testEmbed (forward): mismatch at {}, got {}, expected {}\n", .{ i, got, expe });
+            return error.TestFailed;
+        }
+    }
+
+    // 6) Backward pass test
+    //    We'll create a dummy grad_output with shape [2, 2, 3].
+    //    Let's fill each element with 2.0.
+
+    // Call the backward function
+    try var_output.backwardEx(chain);
+
+    var host_grad_weight = try var_weight.refGrad().?.asUntagged(T).data.toHost(allocator, &stream);
+    defer host_grad_weight.deinit(allocator);
+
+    try stream.sync();
+
+    // Because each embedding is used exactly once in the forward,
+    // each row in the final grad_weight should be [2, 2, 2].
+    // shape: [4, 3].
+    const expected_bwd = [_]T{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    for (host_grad_weight.data, expected_bwd, 0..) |got, expe, i| {
+        if (@abs(got - expe) > 1e-6) {
+            std.debug.print("testEmbed (backward): mismatch at {}, got {}, expected {}\n", .{ i, got, expe });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("testEmbed passed.\n", .{});
+}
 
 pub fn test1s1i1o() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
@@ -918,6 +1071,7 @@ pub fn test1s1i1o() !void {
     try testMaxPooling(allocator);
     try testAveragePooling(allocator);
     try testMaskedFill(allocator);
+    try testEmbed(allocator);
 
     std.debug.print("All scalar tests passed.\n", .{});
 }

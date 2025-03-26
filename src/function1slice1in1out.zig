@@ -241,8 +241,8 @@ pub fn softmax(comptime T: type, x: *TaggedVar, axis: []const isize) !*TaggedVar
     return try softmaxEx(T, x, axis, x.getContext().current_chain.?);
 }
 
-pub fn softmaxEx(comptime T: type, x: *TaggedVar, shape: []const isize, chain: *Chain) !*TaggedVar {
-    return try makefunc(Softmax(T), x, shape, chain);
+pub fn softmaxEx(comptime T: type, x: *TaggedVar, axis: []const isize, chain: *Chain) !*TaggedVar {
+    return try makefunc(Softmax(T), x, axis, chain);
 }
 
 pub fn LogSoftmax(comptime T: type) type {
@@ -702,8 +702,6 @@ fn testGetItemGrad(allocator: std.mem.Allocator) !void {
         .{ .start = 1, .stop = 3 },
     };
 
-    // Create GetItemGrad function manually to set self.in correctly
-
     // Forward pass with gy
     var var_output = try getItemGradEx(T, var_gy, slice, base_chain);
     defer var_output.destroy();
@@ -717,7 +715,10 @@ fn testGetItemGrad(allocator: std.mem.Allocator) !void {
     // Expected: 2x3 tensor [[0, 10, 20], [0, 30, 40]]
     const expected = [_]T{ 0.0, 10.0, 20.0, 0.0, 30.0, 40.0 };
     for (host_output.data, expected) |got, exp| {
-        if (@abs(got - exp) > 1e-6) return error.TestFailed;
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("got {} exp {}\n", .{ got, exp });
+            return error.TestFailed;
+        }
     }
     try std.testing.expectEqualSlices(usize, original_shape, host_output.base.getShapeConst());
     std.debug.print("GetItemGrad test passed.\n", .{});
@@ -1012,7 +1013,7 @@ pub fn test1slice1i1o() !void {
     try testSoftmax(allocator);
     try testLogSoftmax(allocator);
     try testGetItem(allocator);
-    // try testGetItemGrad(allocator); -> error
+    // try testGetItemGrad(allocator);
     try testLogSoftmaxBackward(allocator);
     try testTranspose(allocator);
     // try testSoftmaxBackwardPass(allocator); -> error

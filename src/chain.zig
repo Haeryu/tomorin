@@ -42,7 +42,7 @@ pub const Chain = struct {
         data: GPUTensor(T),
         name: ?[]const u8,
     ) !*TaggedVar {
-        const variable: Variable(T) = .{
+        var variable: Variable(T) = .{
             .data = data,
             .name = name,
             .context = self.context,
@@ -50,12 +50,14 @@ pub const Chain = struct {
             .prev = null,
             .next = null,
             .chain = self,
+            .self_ptr = undefined,
         };
 
         const tagged: TaggedVar = .init(T, variable);
 
         const ptr = try self.tagged_vars.create();
         ptr.* = tagged;
+        variable.self_ptr = ptr;
 
         self.chainVariable(ptr);
 

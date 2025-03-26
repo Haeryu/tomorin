@@ -28,6 +28,8 @@ pub fn Variable(comptime T: type) type {
         prev: ?*TaggedVar = null,
         next: ?*TaggedVar = null,
 
+        self_ptr: *TaggedVar,
+
         const Self = @This();
 
         pub fn destroy(self: *Self) void {
@@ -45,7 +47,7 @@ pub fn Variable(comptime T: type) type {
 
         pub fn unchain(self: *Self) void {
             if (self.chain.var_chain) |head| {
-                if (head.asUntagged(T) == self) {
+                if (head == self.self_ptr) {
                     self.chain.var_chain = self.getNext();
                 }
             }
@@ -183,6 +185,7 @@ pub const TaggedVar = union(enum) {
     f16: Variable(f16),
     f32: Variable(f32),
     f64: Variable(f64),
+    usize: Variable(usize),
 
     pub const SeenSet = std.AutoHashMap(*TaggedVar, void);
 
@@ -192,6 +195,7 @@ pub const TaggedVar = union(enum) {
             f16 => .{ .f16 = variable },
             f32 => .{ .f32 = variable },
             f64 => .{ .f64 = variable },
+            usize => .{ .usize = variable },
             else => unreachable,
         };
     }
@@ -208,6 +212,7 @@ pub const TaggedVar = union(enum) {
             f16 => &self.f16,
             f32 => &self.f32,
             f64 => &self.f64,
+            usize => &self.usize,
             else => unreachable,
         };
     }
@@ -218,6 +223,7 @@ pub const TaggedVar = union(enum) {
             f16 => &self.f16,
             f32 => &self.f32,
             f64 => &self.f64,
+            usize => &self.usize,
             else => unreachable,
         };
     }
@@ -393,6 +399,7 @@ pub const TaggedVar = union(enum) {
             .f16 => try self.getContext().backward(f16, self),
             .f32 => try self.getContext().backward(f32, self),
             .f64 => try self.getContext().backward(f64, self),
+            .usize => try self.getContext().backward(usize, self),
         }
     }
 
@@ -405,6 +412,7 @@ pub const TaggedVar = union(enum) {
             .f16 => try self.getContext().backwardEx(f16, self, chain),
             .f32 => try self.getContext().backwardEx(f32, self, chain),
             .f64 => try self.getContext().backwardEx(f64, self, chain),
+            .usize => try self.getContext().backwardEx(usize, self, chain),
         }
     }
 
@@ -460,6 +468,7 @@ pub const TaggedVar = union(enum) {
             f16 => .{ .f16 = device },
             f32 => .{ .f32 = device },
             f64 => .{ .f64 = device },
+            usize => .{ .usize = device },
             else => unreachable,
         };
     }
@@ -486,6 +495,12 @@ pub const TaggedVar = union(enum) {
             },
             .f64 => |*v| {
                 var host = try std.json.parseFromValue(tomo.tensor.CPUTensor(f64), allocator, value, .{});
+                defer host.deinit();
+
+                try v.data.writeFromHostAsync(host.value.data, 0, v.context.stream);
+            },
+            .usize => |*v| {
+                var host = try std.json.parseFromValue(tomo.tensor.CPUTensor(usize), allocator, value, .{});
                 defer host.deinit();
 
                 try v.data.writeFromHostAsync(host.value.data, 0, v.context.stream);
@@ -525,6 +540,11 @@ pub const TaggedVar = union(enum) {
             .f64 => |*v| {
                 const end = v.data.calcLen() * @sizeOf(f64);
                 try v.data.writeFromHostAsync(constSliceCast(f64, slice[0..end]), 0, v.context.stream);
+                return slice[end..];
+            },
+            .usize => |*v| {
+                const end = v.data.calcLen() * @sizeOf(usize);
+                try v.data.writeFromHostAsync(constSliceCast(usize, slice[0..end]), 0, v.context.stream);
                 return slice[end..];
             },
         }

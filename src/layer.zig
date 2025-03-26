@@ -19,6 +19,7 @@ const batchNormEx = function.batchNormEx;
 const layerNormEx = function.layerNormEx;
 const averagePoolingEx = function.averagePoolingEx;
 const addEx = function.addEx;
+const embedEx = function.embedEx;
 
 const dbg = @import("util.zig").debugPrintGpuTensor;
 
@@ -102,8 +103,8 @@ pub fn LayerDecorator(comptime Self: type) type {
         pub fn destroy(self: *Self) void {
             const fields_info = @typeInfo(@FieldType(Self, "fields")).@"struct";
 
-            if (@hasDecl(Self, "destroyElse")) {
-                self.destroyElse();
+            if (@hasDecl(Self, "predestroy")) {
+                self.predestroy();
             }
 
             inline for (fields_info.fields) |field| {
@@ -1609,6 +1610,69 @@ fn BottleneckB(comptime T: type) type {
             h = try self.fields.conv3.forward(h, chain);
             h = try self.fields.bn3.forward(h, train, chain);
             return try reluEx(T, try addEx(T, h, x, chain), chain);
+        }
+    };
+}
+
+pub fn Embedding(comptime T: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{"w"}, // Only one parameter: the embedding weight matrix
+            &.{},
+        ),
+        num_embeddings: usize,
+        embedding_dim: usize,
+        winit: WInit,
+        context: *Context,
+        chain: *Chain,
+
+        const Self = @This();
+
+        // Weight initialization options, similar to Linear and Conv2d
+        pub const WInit = enum {
+            normal, // N(0, 1)
+            xavier, // Xavier uniform
+            he_normal, // He normal
+            he_uniform, // He uniform
+        };
+
+        pub fn init(
+            num_embeddings: usize,
+            embedding_dim: usize,
+            winit: WInit,
+            context: *Context,
+            chain: *Chain,
+        ) !Self {
+            // Create the weight tensor [num_embeddings, embedding_dim]
+            var weight_tensor: GPUTensor(T) = try .initAsync(&.{ num_embeddings, embedding_dim }, context.stream);
+            errdefer weight_tensor.deinitAsync(context.stream);
+
+            // Initialize the weight tensor based on winit
+            switch (winit) {
+                .normal => try weight_tensor.fillNormalDistribution(0.0, 1.0, context.cuda_context, context.stream),
+                .xavier => try weight_tensor.fillXavierUniform(context.cuda_context, context.stream),
+                .he_normal => try weight_tensor.fillHeNormal(context.cuda_context, context.stream),
+                .he_uniform => try weight_tensor.fillHeUniform(context.cuda_context, context.stream),
+            }
+
+            // Register the weight as a learnable variable
+            const w = try chain.createVariable(T, weight_tensor.move(), "w");
+
+            return .{
+                .fields = .{
+                    .w = w,
+                },
+                .num_embeddings = num_embeddings,
+                .embedding_dim = embedding_dim,
+                .winit = winit,
+                .context = context,
+                .chain = chain,
+            };
+        }
+
+        pub fn forward(self: *Self, indices: *TaggedVar, chain: *Chain) !*TaggedVar {
+            return try embedEx(T, self.fields.w.?, indices, chain);
         }
     };
 }
