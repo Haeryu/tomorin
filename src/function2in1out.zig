@@ -24,6 +24,7 @@ const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
 const squareEx = @import("function1in1out.zig").squareEx;
 const transposeEx = @import("function1in1out.zig").transposeEx;
 const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
+const transposeExEx = @import("function1slice1in1out.zig").transposeExEx;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -332,15 +333,20 @@ pub fn MatMul(comptime T: type) type {
 
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
-            var y = try x1.linear(x2, null, context.stream);
+            var y = try x1.linearImp(x2, null, context.stream);
             errdefer y.deinitAsync(context.stream);
 
             return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
-            const gx = try matmulEx(T, gy, try transposeEx(T, self.in2.?, self.base.chain), self.base.chain);
-            const gw = try matmulEx(T, try transposeEx(T, self.in1.?, self.base.chain), gy, self.base.chain);
+            var perm: [GPUTensor(T).max_rank]usize = undefined;
+            for (perm[0..gy.getShape().len], 0..) |*p, i| {
+                p.* = i;
+            }
+            std.mem.swap(usize, &perm[gy.getShape().len - 1], &perm[gy.getShape().len - 2]);
+            const gx = try matmulEx(T, gy, try transposeExEx(T, self.in2.?, perm[0..gy.getShape().len], self.base.chain), self.base.chain);
+            const gw = try matmulEx(T, try transposeExEx(T, self.in1.?, perm[0..gy.getShape().len], self.base.chain), gy, self.base.chain);
 
             return .{ gx, gw };
         }

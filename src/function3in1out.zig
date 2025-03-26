@@ -18,9 +18,11 @@ const Chain = @import("chain.zig").Chain;
 const makefunc3in1outBase = @import("function.zig").makefunc3in1outBase;
 
 const transposeEx = @import("function1in1out.zig").transposeEx;
+const reshapeEx = @import("function1slice1in1out.zig").reshapeEx;
 const sumToEx = @import("function1in1out.zig").sumToEx;
 const matmulEx = @import("function2in1out.zig").matmulEx;
 const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
+const transposeExEx = @import("function1slice1in1out.zig").transposeExEx;
 
 pub fn FuncDecorator3in1out(comptime Self: type) type {
     return struct {
@@ -187,8 +189,13 @@ pub fn Linear(comptime T: type) type {
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar, *TaggedVar }) {
-            const gx = try matmulEx(T, gy, try transposeEx(T, self.in2.?, self.base.chain), self.base.chain);
-            const gw = try matmulEx(T, try transposeEx(T, self.in1.?, self.base.chain), gy, self.base.chain);
+            var perm: [GPUTensor(T).max_rank]usize = undefined;
+            for (perm[0..gy.getShape().len], 0..) |*p, i| {
+                p.* = i;
+            }
+            std.mem.swap(usize, &perm[gy.getShape().len - 1], &perm[gy.getShape().len - 2]);
+            const gx = try matmulEx(T, gy, try transposeExEx(T, self.in2.?, perm[0..gy.getShape().len], self.base.chain), self.base.chain);
+            const gw = try matmulEx(T, try transposeExEx(T, self.in1.?, perm[0..gy.getShape().len], self.base.chain), gy, self.base.chain);
             const gb = try sumToEx(T, gy, self.in3.?.asUntaggedConst(T).data.base.getShapeConst(), self.base.chain);
 
             return .{ gx, gw, gb };
@@ -205,7 +212,6 @@ pub fn linearEx(comptime T: type, x1: *TaggedVar, x2: *TaggedVar, x3: *TaggedVar
 }
 
 fn testLinearForward(allocator: std.mem.Allocator) !void {
-    // Initialize GPU components
     var stream = try Stream.create();
     defer stream.destroy();
 
@@ -222,56 +228,63 @@ fn testLinearForward(allocator: std.mem.Allocator) !void {
     context.current_chain = base_chain;
     defer base_chain.clear();
 
-    // Define tensor type and shapes
+    // Define tensor type and shapes with batch dimension
     const T = f32;
-    const shape_x = &[_]usize{ 2, 3 }; // Input: 2x3
-    const shape_w = &[_]usize{ 3, 2 }; // Weights: 3x2
-    const shape_b = &[_]usize{ 1, 2 }; // Bias: 1x2
+    const batch_size = 2;
 
     // Initialize input tensor (x)
-    var x_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
-    var gpu_x = try GPUTensor(T).initAsync(shape_x, &stream);
-    defer gpu_x.deinitAsync(&stream);
+    var x_data = [_]T{
+        1.0, 2.0, 3.0, // Batch 1, Row 1
+        4.0, 5.0, 6.0, // Batch 1, Row 2
+        0.5, 1.5, 2.5, // Batch 2, Row 1
+        3.5, 4.5, 5.5, // Batch 2, Row 2
+    };
+    var gpu_x = try GPUTensor(T).initAsync(&.{ batch_size, 2, 3 }, &stream);
     try gpu_x.writeFromHostAsync(&x_data, 0, &stream);
-    var var_x = try base_chain.createVariable(T, gpu_x.move(), "x");
-    defer var_x.destroy();
+    const var_x = try base_chain.createVariable(T, gpu_x.move(), "x");
 
-    // Initialize weight tensor (w)
+    // Initialize weight w (shape: [3, 2])
     var w_data = [_]T{ 0.1, 0.2, 0.3, 0.4, 0.5, 0.6 };
-    var gpu_w = try GPUTensor(T).initAsync(shape_w, &stream);
-    defer gpu_w.deinitAsync(&stream);
+    var gpu_w = try GPUTensor(T).initAsync(&.{ 3, 2 }, &stream);
     try gpu_w.writeFromHostAsync(&w_data, 0, &stream);
-    var var_w = try base_chain.createVariable(T, gpu_w.move(), "w");
-    defer var_w.destroy();
+    const var_w = try base_chain.createVariable(T, gpu_w.move(), "w");
 
-    // Initialize bias tensor (b)
+    // Reshape w to [1, 3, 2] and broadcast to [batch_size, 3, 2]
+    const reshaped_w = try reshapeEx(T, var_w, &.{ 1, 3, 2 }, base_chain);
+    const broadcasted_w = try broadcastToEx(T, reshaped_w, &.{ batch_size, 3, 2 }, base_chain);
+
+    // Initialize bias b (shape: [1, 2])
     var b_data = [_]T{ 0.1, 0.2 };
-    var gpu_b = try GPUTensor(T).initAsync(shape_b, &stream);
-    defer gpu_b.deinitAsync(&stream);
+    var gpu_b = try GPUTensor(T).initAsync(&.{ 1, 2 }, &stream);
     try gpu_b.writeFromHostAsync(&b_data, 0, &stream);
-    var var_b = try base_chain.createVariable(T, gpu_b.move(), "b");
-    defer var_b.destroy();
+    const var_b = try base_chain.createVariable(T, gpu_b.move(), "b");
 
-    // Apply the Linear function
-    var var_y = try linearEx(T, var_x, var_w, try broadcastToEx(T, var_b, &.{ var_x.getRow(), var_w.getCol() }, base_chain), base_chain);
-    defer var_y.destroy();
+    // Reshape b to [1, 1, 2] and broadcast to [batch_size, 2, 2]
+    const reshaped_b = try reshapeEx(T, var_b, &.{ 1, 1, 2 }, base_chain);
+    const broadcasted_b = try broadcastToEx(T, reshaped_b, &.{ batch_size, 2, 2 }, base_chain);
+
+    // Apply linear function with broadcasted w and b
+    var var_y = try linearEx(T, var_x, broadcasted_w, broadcasted_b, base_chain);
 
     // Retrieve output
     var gpu_y = var_y.asUntagged(T).data;
     var host_y = try gpu_y.toHost(allocator, &stream);
     defer host_y.deinit(allocator);
 
-    // Expected output: y = x @ w + b
-    // x: [[1, 2, 3], [4, 5, 6]]
-    // w: [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
-    // b: [0.1, 0.2]
-    // y = [[1*0.1 + 2*0.3 + 3*0.5 + 0.1, 1*0.2 + 2*0.4 + 3*0.6 + 0.2],
-    //      [4*0.1 + 5*0.3 + 6*0.5 + 0.1, 4*0.2 + 5*0.4 + 6*0.6 + 0.2]]
+    // Expected output: y = x @ w + b for each batch
     const expected_y = [_]T{
+        // Batch 1, Row 1
         1.0 * 0.1 + 2.0 * 0.3 + 3.0 * 0.5 + 0.1, // 1.8
         1.0 * 0.2 + 2.0 * 0.4 + 3.0 * 0.6 + 0.2, // 2.8
+            // Batch 1, Row 2
         4.0 * 0.1 + 5.0 * 0.3 + 6.0 * 0.5 + 0.1, // 5.0
         4.0 * 0.2 + 5.0 * 0.4 + 6.0 * 0.6 + 0.2, // 6.0
+            // Batch 2, Row 1
+        0.5 * 0.1 + 1.5 * 0.3 + 2.5 * 0.5 + 0.1, // 1.85
+        0.5 * 0.2 + 1.5 * 0.4 + 2.5 * 0.6 + 0.2, // 2.4
+            // Batch 2, Row 2
+        3.5 * 0.1 + 4.5 * 0.3 + 5.5 * 0.5 + 0.1, // 4.55
+        3.5 * 0.2 + 4.5 * 0.4 + 5.5 * 0.6 + 0.2, // 6.0
     };
 
     // Verify output
@@ -284,7 +297,6 @@ fn testLinearForward(allocator: std.mem.Allocator) !void {
 
 // Test the backward pass
 fn testLinearBackward(allocator: std.mem.Allocator) !void {
-    // Initialize GPU components
     var stream = try Stream.create();
     defer stream.destroy();
 
@@ -301,14 +313,20 @@ fn testLinearBackward(allocator: std.mem.Allocator) !void {
     context.current_chain = base_chain;
     defer base_chain.clear();
 
-    // Define tensor type and shapes
+    // Define tensor type and shapes with batch dimension
     const T = f32;
-    const shape_x = &[_]usize{ 2, 3 };
-    const shape_w = &[_]usize{ 3, 2 };
-    const shape_b = &[_]usize{ 1, 2 };
+    const batch_size = 2;
+    const shape_x = &[_]usize{ batch_size, 2, 3 }; // Batch=2, each 2x3 matrix
+    const shape_w = &[_]usize{ 3, 2 }; // Weights: 3x2
+    const shape_b = &[_]usize{ 1, 2 }; // Bias: 1x2
 
     // Initialize input tensor (x)
-    var x_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var x_data = [_]T{
+        1.0, 2.0, 3.0, // Batch 1, Row 1
+        4.0, 5.0, 6.0, // Batch 1, Row 2
+        0.5, 1.5, 2.5, // Batch 2, Row 1
+        3.5, 4.5, 5.5, // Batch 2, Row 2
+    };
     var gpu_x = try GPUTensor(T).initAsync(shape_x, &stream);
     defer gpu_x.deinitAsync(&stream);
     try gpu_x.writeFromHostAsync(&x_data, 0, &stream);
@@ -323,6 +341,9 @@ fn testLinearBackward(allocator: std.mem.Allocator) !void {
     var var_w = try base_chain.createVariable(T, gpu_w.move(), "w");
     defer var_w.destroy();
 
+    const reshaped_w = try reshapeEx(T, var_w, &.{ 1, 3, 2 }, base_chain);
+    const broadcasted_w = try broadcastToEx(T, reshaped_w, &.{ batch_size, 3, 2 }, base_chain);
+
     // Initialize bias tensor (b)
     var b_data = [_]T{ 0.1, 0.2 };
     var gpu_b = try GPUTensor(T).initAsync(shape_b, &stream);
@@ -331,13 +352,17 @@ fn testLinearBackward(allocator: std.mem.Allocator) !void {
     var var_b = try base_chain.createVariable(T, gpu_b.move(), "b");
     defer var_b.destroy();
 
-    // Apply the Linear function
-    var var_y = try linearEx(T, var_x, var_w, try broadcastToEx(T, var_b, &.{ var_x.getRow(), var_w.getCol() }, base_chain), base_chain);
+    // Explicitly broadcast bias to match output shape [batch_size, 2, 2]
+    const reshaped_b = try reshapeEx(T, var_b, &.{ 1, 1, 2 }, base_chain);
+    const broadcasted_b = try broadcastToEx(T, reshaped_b, &.{ batch_size, 2, 2 }, base_chain);
+
+    // Apply the linear function with broadcasted bias
+    var var_y = try linearEx(T, var_x, broadcasted_w, broadcasted_b, base_chain);
     defer var_y.destroy();
 
     // Set up gradient for backward pass (dy/dy = 1)
-    const shape_y = &[_]usize{ 2, 2 };
-    const gy_data = try allocator.alloc(T, shape_y[0] * shape_y[1]);
+    const shape_y = &[_]usize{ batch_size, 2, 2 };
+    const gy_data = try allocator.alloc(T, batch_size * 2 * 2);
     defer allocator.free(gy_data);
     for (gy_data) |*val| val.* = 1.0; // Gradient of ones
     var gpu_gy = try GPUTensor(T).initAsync(shape_y, &stream);
@@ -364,54 +389,40 @@ fn testLinearBackward(allocator: std.mem.Allocator) !void {
     defer host_gb.deinit(allocator);
 
     // Expected gradients
-    // For y = x @ w + b:
-    // - gx = gy @ w.T
-    // - gw = x.T @ gy
-    // - gb = sum(gy, axis=0)
-
-    // Expected gx: gy @ w.T
-    // gy: [[1, 1], [1, 1]]
-    // w.T: [[0.1, 0.3, 0.5], [0.2, 0.4, 0.6]]
     const expected_gx = [_]T{
+        // Batch 1, Row 1
         1.0 * 0.1 + 1.0 * 0.2, // 0.3
         1.0 * 0.3 + 1.0 * 0.4, // 0.7
         1.0 * 0.5 + 1.0 * 0.6, // 1.1
+            // Batch 1, Row 2
+        1.0 * 0.1 + 1.0 * 0.2, // 0.3
+        1.0 * 0.3 + 1.0 * 0.4, // 0.7
+        1.0 * 0.5 + 1.0 * 0.6, // 1.1
+            // Batch 2, Row 1
+        1.0 * 0.1 + 1.0 * 0.2, // 0.3
+        1.0 * 0.3 + 1.0 * 0.4, // 0.7
+        1.0 * 0.5 + 1.0 * 0.6, // 1.1
+            // Batch 2, Row 2
         1.0 * 0.1 + 1.0 * 0.2, // 0.3
         1.0 * 0.3 + 1.0 * 0.4, // 0.7
         1.0 * 0.5 + 1.0 * 0.6, // 1.1
     };
 
-    // Expected gw: x.T @ gy
-    // x.T: [[1, 4], [2, 5], [3, 6]]
-    // gy: [[1, 1], [1, 1]]
-    // const expected_gw = [_]T{
-    //     1.0 * 1.0 + 4.0 * 1.0, // 5.0
-    //     2.0 * 1.0 + 5.0 * 1.0, // 7.0
-    //     3.0 * 1.0 + 6.0 * 1.0, // 9.0
-    //     1.0 * 1.0 + 4.0 * 1.0, // 5.0
-    //     2.0 * 1.0 + 5.0 * 1.0, // 7.0
-    //     3.0 * 1.0 + 6.0 * 1.0, // 9.0
-    // };
     const expected_gw = [_]T{
-        5.0, 5.0,
-        7.0, 7.0,
-        9.0, 9.0,
+        9.0,  9.0,
+        13.0, 13.0,
+        17.0, 17.0,
     };
 
-    // Expected gb: sum(gy, axis=0)
-    // gy: [[1, 1], [1, 1]]
-    const expected_gb = [_]T{ 2.0, 2.0 }; // [1+1, 1+1]
+    const expected_gb = [_]T{ 4.0, 4.0 };
 
     // Verify gradients
-    //std.debug.print("{any} {any}\n", .{ host_gx.data, expected_gx });
     for (host_gx.data, expected_gx) |computed, expected| {
         if (@abs(computed - expected) > 1e-2) return error.TestFailed;
     }
-    // std.debug.print("{any} {any}\n", .{ host_gw.data, expected_gw });
     for (host_gw.data, expected_gw) |computed, expected| {
         if (@abs(computed - expected) > 1e-2) return error.TestFailed;
     }
-    // std.debug.print("{any} {any}\n", .{ host_gb.data, expected_gb });
     for (host_gb.data, expected_gb) |computed, expected| {
         if (@abs(computed - expected) > 1e-2) return error.TestFailed;
     }

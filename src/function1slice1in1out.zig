@@ -371,6 +371,55 @@ pub fn getItemGradEx(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T
     return try makefunc(GetItemGrad(T), x, slice, chain);
 }
 
+pub fn TransposeEx(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        slice: []const usize, // Permutation slice
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1Slice1in1out(Self);
+
+        const Self = @This();
+
+        fn computeInversePerm(perm: []const usize, allocator: std.mem.Allocator) ![]usize {
+            const len = perm.len;
+            var inv_perm = try allocator.alloc(usize, len);
+            errdefer allocator.free(inv_perm);
+            for (perm, 0..) |p, i| {
+                inv_perm[p] = i;
+            }
+            return inv_perm;
+        }
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const allocator = self.base.context.allocator;
+            const stream = self.base.context.stream;
+            const perm = self.slice;
+            return try x.transposeEx(allocator, perm, stream);
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const allocator = self.base.context.allocator;
+            const perm = self.slice;
+            const inv_perm = try computeInversePerm(perm, allocator);
+            defer allocator.free(inv_perm);
+            return try transposeExEx(T, gy, inv_perm, self.base.chain);
+        }
+    };
+}
+
+// pub fn transposeEx(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice) !*TaggedVar {
+//     return try getItemGradEx(T, x, slice, x.getContext().current_chain.?);
+// }
+
+pub fn transposeExEx(comptime T: type, x: *TaggedVar, slice: []const usize, chain: *Chain) !*TaggedVar {
+    return try makefunc(TransposeEx(T), x, slice, chain);
+}
+
 // tests
 fn testReshape(allocator: std.mem.Allocator) !void {
     var stream = try Stream.create();
@@ -883,6 +932,76 @@ fn testSoftmaxBackwardPass(allocator: std.mem.Allocator) !void {
     std.debug.print("Softmax backward test passed successfully.\n", .{});
 }
 
+fn testTranspose(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    const T = f32;
+    const shape = &[_]usize{ 2, 3 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var gpu_input = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_input.deinitAsync(&stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, &stream);
+
+    var var_input = try base_chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    const perm = &[_]usize{ 1, 0 }; // Transpose axes 0 and 1
+    var output = try transposeExEx(T, var_input, perm, base_chain);
+    defer output.destroy();
+
+    // Check forward pass
+    var host_output = try output.asUntagged(T).data.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+    try stream.sync();
+
+    const expected_output = [_]T{ 1.0, 4.0, 2.0, 5.0, 3.0, 6.0 };
+    for (host_output.data, expected_output) |got, exp| {
+        if (@abs(got - exp) > 1e-6) return error.TestFailed;
+    }
+
+    // Set gradient for output (all ones)
+    const gy_data = try allocator.alloc(T, 6);
+    defer allocator.free(gy_data);
+    @memset(gy_data, 1.0);
+    var gy_tensor = try GPUTensor(T).initAsync(&[_]usize{ 3, 2 }, &stream);
+    defer gy_tensor.deinitAsync(&stream);
+    try gy_tensor.writeFromHostAsync(gy_data, 0, &stream);
+    var gy = try base_chain.createVariable(T, gy_tensor.move(), "gy");
+    defer gy.destroy();
+    output.setGrad(gy);
+
+    // Perform backward pass
+    const transpose_func = output.asUntagged(T).creator.?;
+    try transpose_func.vtable.backward(transpose_func.ptr);
+
+    // Check gradient for input
+    var gx = var_input.refGrad().?;
+    var host_gx = try gx.asUntagged(T).data.toHost(allocator, &stream);
+    defer host_gx.deinit(allocator);
+    try stream.sync();
+
+    // Since gy is all ones, gx should be all ones after inverse transpose
+    for (host_gx.data) |val| {
+        if (@abs(val - 1.0) > 1e-6) return error.TestFailed;
+    }
+
+    std.debug.print("Transpose test passed.\n", .{});
+}
+
 pub fn test1slice1i1o() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -895,6 +1014,7 @@ pub fn test1slice1i1o() !void {
     try testGetItem(allocator);
     // try testGetItemGrad(allocator); -> error
     try testLogSoftmaxBackward(allocator);
+    try testTranspose(allocator);
     // try testSoftmaxBackwardPass(allocator); -> error
 
     std.debug.print("All 1slice1i1o tests passed.\n", .{});

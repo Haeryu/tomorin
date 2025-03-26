@@ -220,7 +220,8 @@ pub fn Split(comptime n_out: usize, comptime T: type) type {
             if (original_shape.len <= axis) return error.InvalidAxis;
             if (original_shape[axis] % n_out != 0) return error.InvalidSplit;
 
-            const split_size = original_shape[axis] / n_out;
+            //const split_size = original_shape[axis] / n_out;
+            const split_size = @divExact(original_shape[axis], n_out);
             const rank = original_shape.len;
 
             var outputs: [n_out]GPUTensor(T) = undefined;
