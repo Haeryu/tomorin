@@ -19,6 +19,7 @@ const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
 const addEx = @import("function2in1out.zig").addEx;
 const mulEx = @import("function2in1out.zig").mulEx;
+const subEx = @import("function2in1out.zig").subEx;
 
 pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     return struct {
@@ -376,6 +377,64 @@ pub fn averagePooling(comptime T: type, x: *TaggedVar, scalar: AveragePooling(T)
 
 pub fn averagePoolingEx(comptime T: type, x: *TaggedVar, scalar: AveragePooling(T).Scalar, chain: *Chain) !*TaggedVar {
     return try makefunc(AveragePooling(T), x, scalar, chain);
+}
+
+pub fn MaskedFill(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar, // Input tensor x
+        out: ?*TaggedVar, // Output tensor
+        scalar: Scalar, // Mask tensor (treated as scalar-like parameter)
+        base: FunctionBase,
+
+        pub const Scalar = struct {
+            mask: GPUTensor(T),
+            val: T,
+        }; // Mask tensor as the scalar parameter
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
+
+        const Self = MaskedFill(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            var y = try x.cloneAsync(context.stream);
+            errdefer y.deinitAsync(context.stream);
+
+            try y.maskedFill(&self.scalar.mask, self.scalar.val, context.stream);
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const chain = self.base.chain;
+            const stream = self.base.context.stream;
+            // Create a constant tensor of 1.0
+            var one_minus_mask = try self.scalar.mask.cloneAsync(stream);
+            defer one_minus_mask.deinitAsync(stream);
+            try one_minus_mask.scale(-1.0, self.base.context.stream);
+            try one_minus_mask.shift(1.0, stream);
+            // Compute 1 - mask
+            const one_minus_mask_var = try chain.createVariable(T, one_minus_mask.move(), null);
+            defer one_minus_mask_var.destroy();
+            // Compute gx = gy * (1 - mask)
+            const gx = try mulEx(T, gy, one_minus_mask_var, chain);
+            return gx;
+        }
+
+        pub fn predestroy(self: *Self) void {
+            const stream = self.base.context.stream;
+            self.scalar.mask.deinitAsync(stream);
+        }
+    };
+}
+
+pub fn maskedFill(comptime T: type, x: *TaggedVar, scalar: MaskedFill(T).Scalar) !*TaggedVar {
+    return try averagePoolingEx(T, x, scalar, x.getContext().current_chain.?);
+}
+
+pub fn maskedFillEx(comptime T: type, x: *TaggedVar, scalar: MaskedFill(T).Scalar, chain: *Chain) !*TaggedVar {
+    return try makefunc(MaskedFill(T), x, scalar, chain);
 }
 
 // tests
@@ -756,6 +815,97 @@ fn testAveragePooling(allocator: std.mem.Allocator) !void {
     std.debug.print("AveragePooling test passed.\n", .{});
 }
 
+fn testMaskedFill(allocator: std.mem.Allocator) !void {
+    // Initialize GPU components
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Define tensor type and shape
+    const T = f32;
+    const shape = &[_]usize{ 1, 3 };
+
+    // Initialize input tensor x: [1.0, 2.0, 3.0]
+    var x_data = [_]T{ 1.0, 2.0, 3.0 };
+    var gpu_x = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_x.deinitAsync(&stream);
+    try gpu_x.writeFromHostAsync(&x_data, 0, &stream);
+    var var_x = try base_chain.createVariable(T, gpu_x.move(), "x");
+    defer var_x.destroy();
+
+    // Initialize mask tensor: [0.0, 1.0, 0.0]
+    var mask_data = [_]T{ 0.0, 1.0, 0.0 };
+    var gpu_mask = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_mask.deinitAsync(&stream);
+    try gpu_mask.writeFromHostAsync(&mask_data, 0, &stream);
+
+    // Define the scalar fill value
+    const num: T = 0.0;
+
+    // Apply MaskedFill using maskedFillEx
+    var var_y = try maskedFillEx(T, var_x, .{
+        .mask = gpu_mask.move(),
+        .val = num,
+    }, base_chain);
+    defer var_y.destroy();
+
+    // Retrieve output
+    var gpu_y = var_y.asUntagged(T).data;
+    var host_y = try gpu_y.toHost(allocator, &stream);
+    defer host_y.deinit(allocator);
+
+    // Verify forward pass: Expected output [1.0, 0.0, 3.0]
+    const expected_y = [_]T{ 1.0, 0.0, 3.0 };
+    for (host_y.data, expected_y) |computed, expected| {
+        if (@abs(computed - expected) > 1e-5) {
+            std.debug.print("Forward pass failed: computed {}, expected {}\n", .{ computed, expected });
+            return error.TestFailed;
+        }
+    }
+
+    // Set up gradient for backward pass (dy/dy = 1)
+    const gy_data = try allocator.alloc(T, shape[0] * shape[1]);
+    defer allocator.free(gy_data);
+    for (gy_data) |*val| val.* = 1.0; // Gradient of ones
+    var gpu_gy = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_gy.deinitAsync(&stream);
+    try gpu_gy.writeFromHostAsync(gy_data, 0, &stream);
+    var var_gy = try base_chain.createVariable(T, gpu_gy.move(), "gy");
+    defer var_gy.destroy();
+    var_y.setGrad(var_gy);
+
+    // Perform backward pass
+    try var_y.backwardEx(base_chain);
+
+    // Retrieve gradient of x
+    var gpu_gx = var_x.refGradConst().?.asUntaggedConst(T).data;
+    var host_gx = try gpu_gx.toHost(allocator, &stream);
+    defer host_gx.deinit(allocator);
+
+    // Verify backward pass: Expected gradient [1.0, 0.0, 1.0]
+    const expected_gx = [_]T{ 1.0, 0.0, 1.0 };
+    for (host_gx.data, expected_gx) |computed, expected| {
+        if (@abs(computed - expected) > 1e-5) {
+            std.debug.print("Backward pass failed: computed {}, expected {}\n", .{ computed, expected });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("testMaskedFill passed successfully.\n", .{});
+}
+
 pub fn test1s1i1o() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -767,6 +917,7 @@ pub fn test1s1i1o() !void {
     try testPow(allocator);
     try testMaxPooling(allocator);
     try testAveragePooling(allocator);
+    try testMaskedFill(allocator);
 
     std.debug.print("All scalar tests passed.\n", .{});
 }
