@@ -101,7 +101,7 @@ pub const Context = struct {
 
         var ones: tomo.tensor.GPUTensor(T) = try .initAsync(variable_untagged.data.base.getShape(), self.stream);
         errdefer ones.deinitAsync(self.stream);
-        try ones.fill(if (T == BF16) BF16.fromF32(1.0) else 1.0, self.stream);
+        try ones.fill(1.0, self.stream);
 
         const initial_grad = try chain.createVariable(T, ones, null);
 

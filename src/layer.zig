@@ -25,6 +25,7 @@ const transposeExEx = function.transposeExEx;
 const scaleEx = function.scaleEx;
 const maskedFillEx = function.maskedFillEx;
 const softmaxEx = function.softmaxEx;
+const geluEx = function.geluEx;
 
 const dbg = @import("util.zig").debugPrintGpuTensor;
 
@@ -1811,6 +1812,23 @@ pub fn CausalSelfAttention(comptime T: type) type {
             y = try self.fields.resid_dropout.forward(y, train, chain);
 
             return y;
+        }
+    };
+}
+
+pub fn Gelu(comptime T: type) type {
+    struct {
+        pub usingnamespace LayerDecorator(Self);
+
+        fields: LayerFieldsFactory(
+            &.{},
+            &.{},
+        ),
+        const Self = @This();
+        pub const init: Self = .{ .fields = .{} };
+
+        pub fn forward(_: *Self, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+            return try geluEx(T, x, chain);
         }
     };
 }

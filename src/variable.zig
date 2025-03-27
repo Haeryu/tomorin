@@ -549,4 +549,12 @@ pub const TaggedVar = union(enum) {
             },
         }
     }
+
+    pub fn setSelfPtr(self: *TaggedVar) void {
+        switch (self.*) {
+            inline else => |*v| {
+                v.self_ptr = self;
+            },
+        }
+    }
 };

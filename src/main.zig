@@ -29,6 +29,7 @@ const linear = tomorin.function.linear;
 const softmaxCrossEntropyEx = tomorin.function.softmaxCrossEntropyEx;
 const getItemEx = tomorin.function.getItemEx;
 const TaggedVar = tomorin.variable.TaggedVar;
+const GPUTensor = tomo.tensor.GPUTensor;
 
 const dbg = tomorin.util.debugPrintGpuTensor;
 
@@ -1269,14 +1270,13 @@ fn example12() !void {
     }, &stream);
     defer xv.deinitAsync(&stream);
 
-    var tv: tomo.tensor.GPUTensor(F) = try .initAsync(&.{
+    var tv: tomo.tensor.GPUTensor(usize) = try .initAsync(&.{
         data_loader.batch_size,
-        tomorin.datasets.CIFAR10Dataset(F).num_classes,
     }, &stream);
     defer tv.deinitAsync(&stream);
 
     const x = try base_chain.createVariable(F, xv.move(), "x");
-    const t = try base_chain.createVariable(F, tv.move(), "t");
+    const t = try base_chain.createVariable(usize, tv.move(), "t");
 
     const max_epoch = 1;
     // const lr = 1.0;
@@ -1302,19 +1302,20 @@ fn example12() !void {
     t.clearGrad();
     model.clearGrads();
     //  try model.loadJsonStringField(allocator, "resnet50_out.json");
-    try model.loadBinary(allocator, "resnet50_out.bin");
+    //    try model.loadBinary(allocator, "resnet50_out.bin");
 
     var timer = try std.time.Timer.start();
+
     for (0..max_epoch) |epoch| {
         var sum_loss: F = 0.0;
         var sum_acc: F = 0.0;
         timer.reset();
 
         var i: usize = 0;
-        while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(F).data })) |_| : (i += 1) {
+        while (try data_loader.writeNextBatch(.{ &x.asUntagged(F).data, &t.asUntagged(usize).data })) |_| : (i += 1) {
             const y = try model.forward(x, true, iter_chain);
 
-            const loss = try softmaxCrossEntropyEx(F, y, t, &.{1}, iter_chain);
+            const loss = try softmaxCrossEntropyEx(F, y, .{ .t = t }, iter_chain);
 
             const acc = try tomorin.util.accuracy(F, y, t);
 
@@ -1334,6 +1335,7 @@ fn example12() !void {
             sum_acc += acc;
 
             iter_chain.clear();
+
             try stream.sync();
 
             std.debug.print("epoch {} loss {d} acc {d}\n", .{
@@ -1356,13 +1358,13 @@ fn example12() !void {
     try stream.sync();
 
     //try model.saveJsonStringField(allocator, "resnet50_out.json");
-    try model.saveBinary(allocator, "resnet50_out.bin");
+    // try model.saveBinary(allocator, "resnet50_out.bin");
 }
 
 // TODO: make metaprogramming tools that makes program easier
 pub fn main() !void {
     // try example4();
     // try example9();
-    // try example12();
-    try function.testFunctions();
+    try example12();
+    // try function.testFunctions();
 }

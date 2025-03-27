@@ -48,10 +48,9 @@ pub fn accuracy(comptime T: type, y: *TaggedVar, t: *TaggedVar) !T {
     var pred = try y.asUntagged(T).data.argmax(context.allocator, &.{1}, true, context.stream);
     defer pred.deinitAsync(context.stream);
 
-    var target = try t.asUntagged(T).data.argmax(context.allocator, &.{1}, true, context.stream);
-    defer target.deinitAsync(context.stream);
+    try pred.reshape(t.getShape());
 
-    try pred.equal(&target, context.stream);
+    try pred.equal(&t.asUntagged(usize).data, context.stream);
 
     var acc = try pred.meanInt(T, context.allocator, null, true, context.stream);
     defer acc.deinitAsync(context.stream);

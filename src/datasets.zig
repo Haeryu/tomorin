@@ -347,7 +347,7 @@ pub fn CIFAR10Dataset(comptime T: type) type {
             self: *Self,
             i: usize,
             batch_i: usize,
-            batch: [2]*GPUTensor(T),
+            batch: std.meta.Tuple(&.{ *GPUTensor(T), *GPUTensor(usize) }),
             context: *Context,
         ) !void {
             const data_tensor, const label_tensor = batch;
@@ -369,12 +369,10 @@ pub fn CIFAR10Dataset(comptime T: type) type {
             }
 
             // Extract label and image
-            const label_u8 = record_buffer[0];
+            const label: [1]usize = .{@intCast(record_buffer[0])};
             const image_slice = record_buffer[1..];
 
             // Convert label to one-hot vector
-            var host_label: [num_classes]T = .{0.0} ** num_classes;
-            host_label[label_u8] = 1.0;
 
             // Allocate buffer for the full 32×32×3 image
             const host_image = try self.allocator.alloc(T, out_image_size);
@@ -400,8 +398,8 @@ pub fn CIFAR10Dataset(comptime T: type) type {
 
             // Write label to GPU tensor
             try label_tensor.writeFromHostAsync(
-                &host_label,
-                i * num_classes,
+                &label,
+                i,
                 context.stream,
             );
         }

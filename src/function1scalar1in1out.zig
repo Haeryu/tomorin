@@ -18,8 +18,14 @@ const Chain = @import("chain.zig").Chain;
 const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 
 const addEx = @import("function2in1out.zig").addEx;
+const expEx = @import("function1in1out.zig").expEx;
 const mulEx = @import("function2in1out.zig").mulEx;
+const divEx = @import("function2in1out.zig").divEx;
 const subEx = @import("function2in1out.zig").subEx;
+const sumEx = @import("function1in1out.zig").sumEx;
+const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
+const logSoftmaxEx = @import("function1slice1in1out.zig").logSoftmaxEx;
+const softmaxEx = @import("function1slice1in1out.zig").softmaxEx;
 
 pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     return struct {
@@ -483,6 +489,186 @@ pub fn embed(comptime T: type, w: *TaggedVar, indices: *TaggedVar) !*TaggedVar {
 
 pub fn embedEx(comptime T: type, w: *TaggedVar, indices: *TaggedVar, chain: *Chain) !*TaggedVar {
     return try makefunc(Embed(T), w, indices, chain);
+}
+
+pub fn SoftmaxCrossEntropy(comptime T: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        scalar: Scalar,
+
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+        pub const Scalar = struct {
+            axis: ?[]const isize = &.{1},
+            ignore_index: ?usize = null,
+            t: *TaggedVar, // GPUTensor(usize) with class indices
+        };
+
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
+
+        const Self = SoftmaxCrossEntropy(T);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+            const batch_size = x.base.getShapeConst()[0];
+            const num_classes = x.base.getShapeConst()[1]; // Assuming axis = 1
+
+            // Clone input tensor
+            var x_clone = try x.cloneAsync(context.stream);
+            defer x_clone.deinitAsync(context.stream);
+
+            const x_var = try self.base.chain.createVariable(T, x_clone.move(), null);
+            defer x_var.destroy();
+
+            // Compute log softmax along the specified axis
+            var logsm = try logSoftmaxEx(T, x_var, self.scalar.axis.?, self.base.chain);
+            defer logsm.destroy();
+
+            // Get class indices from self.t
+            const t = self.scalar.t.asUntagged(usize);
+
+            // Convert class indices to one-hot encoding
+            var one_hot_t = try t.data.toOneHot(T, num_classes, context.stream);
+            defer one_hot_t.deinitAsync(context.stream);
+
+            // Compute element-wise product: logsm * one_hot_t
+            var prod = try logsm.asUntagged(T).data.cloneAsync(context.stream);
+            defer prod.deinitAsync(context.stream);
+            try prod.product(&one_hot_t, context.stream);
+
+            // Handle ignore_index
+            var mask: GPUTensor(T) = undefined;
+            var num_non_ignored: GPUTensor(T) = undefined;
+            if (self.scalar.ignore_index) |ignore_idx| {
+                var mask_uz = try t.data.cloneAsync(context.stream);
+                defer mask_uz.deinitAsync(context.stream);
+
+                try mask_uz.neq(ignore_idx, context.stream);
+
+                mask = try mask_uz.cast(T, context.stream);
+                errdefer mask.deinitAsync(context.stream);
+
+                num_non_ignored = try mask.sum(context.allocator, null, true, context.stream);
+                errdefer num_non_ignored.deinitAsync(context.stream);
+            } else {
+                mask = try .initAsync(&.{batch_size}, context.stream);
+                errdefer mask.deinitAsync(context.stream);
+                try mask.fill(1.0, context.stream);
+
+                num_non_ignored = try mask.sum(context.allocator, null, true, context.stream);
+                errdefer num_non_ignored.deinitAsync(context.stream);
+            }
+            defer mask.deinitAsync(context.stream);
+            defer num_non_ignored.deinitAsync(context.stream);
+
+            try mask.reshape(&.{ batch_size, 1 });
+            var mask_broad = try mask.broadcastTo(prod.base.getShapeConst(), context.stream);
+            defer mask_broad.deinitAsync(context.stream);
+
+            // Apply mask to product
+            var masked_prod = try mask_broad.cloneAsync(context.stream);
+            defer masked_prod.deinitAsync(context.stream);
+            try masked_prod.product(&prod, context.stream);
+
+            // Sum the masked product
+            var loss = try masked_prod.sum(context.allocator, null, true, context.stream);
+            defer loss.deinitAsync(context.stream);
+
+            // Scale by -1 / num_non_ignored
+            try num_non_ignored.inv(context.stream);
+            try num_non_ignored.scale(-1.0, context.stream);
+
+            var num_non_ignored_broad = try num_non_ignored.broadcastTo(loss.base.getShapeConst(), context.stream);
+            defer num_non_ignored_broad.deinitAsync(context.stream);
+
+            try loss.product(&num_non_ignored_broad, context.stream);
+
+            return loss.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const context = self.base.context;
+            const batch_size = self.in.?.getShape()[0];
+            const num_classes = self.in.?.getShape()[1];
+
+            // Compute softmax output
+            const y = try softmaxEx(T, self.in.?, self.scalar.axis.?, self.base.chain);
+
+            // Get class indices
+            const t = self.scalar.t.asUntagged(usize);
+
+            // Convert to one-hot
+            var one_hot_t = try t.data.toOneHot(T, num_classes, context.stream);
+            defer one_hot_t.deinitAsync(context.stream);
+
+            const one_hot_t_var = try self.base.chain.createVariable(T, one_hot_t.move(), null);
+
+            // Compute y - one_hot(t)
+            var y_min_onehot = try subEx(T, y, one_hot_t_var, self.base.chain);
+
+            // Handle ignore_index
+            var mask: GPUTensor(T) = undefined;
+            var num_non_ignored: GPUTensor(T) = undefined;
+            if (self.scalar.ignore_index) |ignore_idx| {
+                var mask_uz = try t.data.cloneAsync(context.stream);
+                defer mask_uz.deinitAsync(context.stream);
+
+                try mask_uz.neq(ignore_idx, context.stream);
+
+                mask = try mask_uz.cast(T, context.stream);
+                errdefer mask.deinitAsync(context.stream);
+
+                num_non_ignored = try mask.sum(context.allocator, null, true, context.stream);
+                errdefer num_non_ignored.deinitAsync(context.stream);
+            } else {
+                mask = try .initAsync(&.{batch_size}, context.stream);
+                errdefer mask.deinitAsync(context.stream);
+                try mask.fill(1.0, context.stream);
+
+                num_non_ignored = try mask.sum(context.allocator, null, true, context.stream);
+                errdefer num_non_ignored.deinitAsync(context.stream);
+            }
+            defer mask.deinitAsync(context.stream);
+            defer num_non_ignored.deinitAsync(context.stream);
+
+            try num_non_ignored.inv(context.stream);
+
+            try mask.reshape(&.{ batch_size, 1 });
+            var mask_broad = try mask.broadcastTo(y_min_onehot.getShape(), context.stream);
+
+            const mask_broad_var = try self.base.chain.createVariable(T, mask_broad.move(), null);
+
+            // Apply mask to gradient
+            const masked_grad = try mulEx(T, mask_broad_var, y_min_onehot, self.base.chain);
+
+            // Scale gy by 1 / num_non_ignored
+            const num_non_ignored_v = try self.base.chain.createVariable(T, num_non_ignored.move(), null);
+
+            const num_non_ignored_v_broad = try broadcastToEx(T, num_non_ignored_v, gy.getShape(), self.base.chain);
+
+            const gy_scaled = try mulEx(T, gy, num_non_ignored_v_broad, self.base.chain);
+
+            const gy_scaled_broad = try broadcastToEx(T, gy_scaled, masked_grad.getShape(), self.base.chain);
+
+            // Final gradient
+            return try mulEx(T, gy_scaled_broad, masked_grad, self.base.chain);
+        }
+    };
+}
+
+pub fn softmaxCrossEntropy(
+    comptime T: type,
+    logits: *TaggedVar,
+    scalar: SoftmaxCrossEntropy(T).Scalar,
+) !*TaggedVar {
+    return try softmaxCrossEntropyEx(T, logits, scalar, logits.getContext().current_chain.?);
+}
+
+pub fn softmaxCrossEntropyEx(comptime T: type, logits: *TaggedVar, scalar: SoftmaxCrossEntropy(T).Scalar, chain: *Chain) !*TaggedVar {
+    return try makefunc(SoftmaxCrossEntropy(T), logits, scalar, chain);
 }
 
 // tests
@@ -1058,6 +1244,469 @@ fn testEmbed(allocator: std.mem.Allocator) !void {
 
     std.debug.print("testEmbed passed.\n", .{});
 }
+fn testSoftmaxCrossEntropyNoIgnoreForward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 3x4 logits tensor
+    const T = f32;
+    const shape = &[_]usize{ 3, 4 };
+    var logits_data = [_]T{
+        1.0, 2.0, 3.0, 4.0, // Sample 0
+        4.0, 3.0, 2.0, 1.0, // Sample 1
+        2.0, 2.0, 2.0, 2.0, // Sample 2
+    };
+    var gpu_logits = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_logits.deinitAsync(&stream);
+    try gpu_logits.writeFromHostAsync(&logits_data, 0, &stream);
+
+    var var_logits = try base_chain.createVariable(T, gpu_logits.move(), "logits");
+    defer var_logits.destroy();
+
+    // Target: [0, 1, 2]
+    var t_data = [_]usize{ 0, 1, 2 };
+    var gpu_t = try GPUTensor(usize).initAsync(&[_]usize{3}, &stream);
+    defer gpu_t.deinitAsync(&stream);
+    try gpu_t.writeFromHostAsync(&t_data, 0, &stream);
+
+    var var_t = try base_chain.createVariable(usize, gpu_t.move(), "t");
+    defer var_t.destroy();
+
+    // Scalar without ignore_index
+    const scalar = SoftmaxCrossEntropy(T).Scalar{ .t = var_t };
+
+    // Compute loss
+    var loss_var = try softmaxCrossEntropyEx(T, var_logits, scalar, base_chain);
+    defer loss_var.destroy();
+
+    var gpu_loss = loss_var.asUntagged(T).data;
+    var host_loss = try gpu_loss.toHost(allocator, &stream);
+    defer host_loss.deinit(allocator);
+
+    try stream.sync();
+
+    // Compute expected loss programmatically
+    const num_samples = 3;
+    const num_classes = 4;
+    var expected_loss: T = 0.0;
+
+    for (0..num_samples) |i| {
+        const logits_row = logits_data[i * num_classes .. (i + 1) * num_classes];
+        const target = t_data[i];
+
+        // Compute max logit for numerical stability
+        var max_logit: T = logits_row[0];
+        for (logits_row[1..]) |val| {
+            if (val > max_logit) max_logit = val;
+        }
+
+        var sum_exp: T = 0.0;
+        var exps: [num_classes]T = undefined;
+        for (logits_row, 0..) |val, j| {
+            exps[j] = @exp(val - max_logit);
+            sum_exp += exps[j];
+        }
+
+        const log_sum_exp = @log(sum_exp);
+        const logit_target = logits_row[target];
+        const loss_i = (max_logit - logit_target) + log_sum_exp;
+        expected_loss += loss_i;
+    }
+    expected_loss /= @as(T, @floatFromInt(num_samples));
+
+    if (@abs(host_loss.data[0] - expected_loss) > 1e-5) {
+        std.debug.print("Expected loss: {}, Actual loss: {}\n", .{ expected_loss, host_loss.data[0] });
+        return error.TestFailed;
+    }
+
+    std.debug.print("SoftmaxCrossEntropy no ignore_index forward test passed.\n", .{});
+}
+
+fn testSoftmaxCrossEntropyWithIgnoreForward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 3x4 logits tensor
+    const T = f32;
+    const shape = &[_]usize{ 3, 4 };
+    var logits_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 2.0, 2.0, 2.0 };
+    var gpu_logits = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_logits.deinitAsync(&stream);
+    try gpu_logits.writeFromHostAsync(&logits_data, 0, &stream);
+
+    var var_logits = try base_chain.createVariable(T, gpu_logits.move(), "logits");
+    defer var_logits.destroy();
+
+    // Target: [0, 1, 999], ignore_index = 999
+    const ignore_index: usize = 999;
+    var t_data = [_]usize{ 0, 1, ignore_index };
+    var gpu_t = try GPUTensor(usize).initAsync(&[_]usize{3}, &stream);
+    defer gpu_t.deinitAsync(&stream);
+    try gpu_t.writeFromHostAsync(&t_data, 0, &stream);
+
+    var var_t = try base_chain.createVariable(usize, gpu_t.move(), "t");
+    defer var_t.destroy();
+
+    // Scalar with ignore_index
+    const scalar = SoftmaxCrossEntropy(T).Scalar{ .t = var_t, .ignore_index = ignore_index };
+
+    // Compute loss
+    var loss_var = try softmaxCrossEntropyEx(T, var_logits, scalar, base_chain);
+    defer loss_var.destroy();
+
+    var gpu_loss = loss_var.asUntagged(T).data;
+    var host_loss = try gpu_loss.toHost(allocator, &stream);
+    defer host_loss.deinit(allocator);
+
+    try stream.sync();
+
+    // Compute expected loss programmatically
+    const num_samples = 3;
+    const num_classes = 4;
+    var expected_loss: T = 0.0;
+    var num_non_ignored: usize = 0;
+
+    for (0..num_samples) |i| {
+        if (t_data[i] == ignore_index) continue;
+        num_non_ignored += 1;
+
+        const logits_row = logits_data[i * num_classes .. (i + 1) * num_classes];
+        const target = t_data[i];
+
+        var max_logit: T = logits_row[0];
+        for (logits_row[1..]) |val| {
+            if (val > max_logit) max_logit = val;
+        }
+
+        var sum_exp: T = 0.0;
+        var exps: [num_classes]T = undefined;
+        for (logits_row, 0..) |val, j| {
+            exps[j] = @exp(val - max_logit);
+            sum_exp += exps[j];
+        }
+
+        const log_sum_exp = @log(sum_exp);
+        const logit_target = logits_row[target];
+        const loss_i = (max_logit - logit_target) + log_sum_exp;
+        expected_loss += loss_i;
+    }
+
+    if (num_non_ignored == 0) {
+        expected_loss = 0.0;
+    } else {
+        expected_loss /= @as(T, @floatFromInt(num_non_ignored));
+    }
+
+    if (@abs(host_loss.data[0] - expected_loss) > 1e-5) {
+        std.debug.print("Expected loss: {}, Actual loss: {}\n", .{ expected_loss, host_loss.data[0] });
+        return error.TestFailed;
+    }
+
+    std.debug.print("SoftmaxCrossEntropy with ignore_index forward test passed.\n", .{});
+}
+
+fn testSoftmaxCrossEntropyAllIgnoredForward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 3x4 logits tensor
+    const T = f32;
+    const shape = &[_]usize{ 3, 4 };
+    var logits_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 2.0, 2.0, 2.0 };
+    var gpu_logits = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_logits.deinitAsync(&stream);
+    try gpu_logits.writeFromHostAsync(&logits_data, 0, &stream);
+
+    var var_logits = try base_chain.createVariable(T, gpu_logits.move(), "logits");
+    defer var_logits.destroy();
+
+    // Target: [999, 999, 999], ignore_index = 999
+    const ignore_index: usize = 999;
+    var t_data = [_]usize{ ignore_index, ignore_index, ignore_index };
+    var gpu_t = try GPUTensor(usize).initAsync(&[_]usize{3}, &stream);
+    defer gpu_t.deinitAsync(&stream);
+    try gpu_t.writeFromHostAsync(&t_data, 0, &stream);
+
+    var var_t = try base_chain.createVariable(usize, gpu_t.move(), "t");
+    defer var_t.destroy();
+
+    // Scalar with ignore_index
+    const scalar = SoftmaxCrossEntropy(T).Scalar{ .t = var_t, .ignore_index = ignore_index };
+
+    // Compute loss
+    var loss_var = try softmaxCrossEntropyEx(T, var_logits, scalar, base_chain);
+    defer loss_var.destroy();
+
+    var gpu_loss = loss_var.asUntagged(T).data;
+    var host_loss = try gpu_loss.toHost(allocator, &stream);
+    defer host_loss.deinit(allocator);
+
+    try stream.sync();
+
+    // Expected loss is 0 since all samples are ignored
+    const expected_loss: T = 0.0;
+
+    if (@abs(host_loss.data[0] - expected_loss) > 1e-5) {
+        std.debug.print("Expected loss: {}, Actual loss: {}\n", .{ expected_loss, host_loss.data[0] });
+        return error.TestFailed;
+    }
+
+    std.debug.print("SoftmaxCrossEntropy all ignored forward test passed.\n", .{});
+}
+
+fn testSoftmaxCrossEntropyNoIgnoreBackward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 3x4 logits tensor
+    const T = f32;
+    const shape = &[_]usize{ 3, 4 };
+    var logits_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 2.0, 2.0, 2.0 };
+    var gpu_logits = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_logits.deinitAsync(&stream);
+    try gpu_logits.writeFromHostAsync(&logits_data, 0, &stream);
+
+    var var_logits = try base_chain.createVariable(T, gpu_logits.move(), "logits");
+    defer var_logits.destroy();
+
+    // Target: [0, 1, 2]
+    var t_data = [_]usize{ 0, 1, 2 };
+    var gpu_t = try GPUTensor(usize).initAsync(&[_]usize{3}, &stream);
+    defer gpu_t.deinitAsync(&stream);
+    try gpu_t.writeFromHostAsync(&t_data, 0, &stream);
+
+    var var_t = try base_chain.createVariable(usize, gpu_t.move(), "t");
+    defer var_t.destroy();
+
+    // Scalar without ignore_index
+    const scalar = SoftmaxCrossEntropy(T).Scalar{ .t = var_t };
+
+    // Compute loss
+    var loss_var = try softmaxCrossEntropyEx(T, var_logits, scalar, base_chain);
+    defer loss_var.destroy();
+
+    // Backward pass with gy = 1.0
+
+    try loss_var.backwardEx(base_chain);
+
+    var grad_var = var_logits.refGrad().?;
+
+    var gpu_grad = grad_var.asUntagged(T).data;
+    var host_grad = try gpu_grad.toHost(allocator, &stream);
+    defer host_grad.deinit(allocator);
+
+    try stream.sync();
+
+    // Compute expected gradient programmatically
+    const num_samples = 3;
+    const num_classes = 4;
+    const count = num_samples;
+    var expected_grad = try allocator.alloc(T, logits_data.len);
+    defer allocator.free(expected_grad);
+    @memset(expected_grad, 0.0);
+
+    for (0..num_samples) |i| {
+        const logits_row = logits_data[i * num_classes .. (i + 1) * num_classes];
+        const target = t_data[i];
+
+        // Compute softmax
+        var max_logit: T = logits_row[0];
+        for (logits_row[1..]) |val| {
+            if (val > max_logit) max_logit = val;
+        }
+
+        var sum_exp: T = 0.0;
+        var exps: [num_classes]T = undefined;
+        for (logits_row, 0..) |val, j| {
+            exps[j] = @exp(val - max_logit);
+            sum_exp += exps[j];
+        }
+
+        var softmax: [num_classes]T = undefined;
+        for (0..num_classes) |j| {
+            softmax[j] = exps[j] / sum_exp;
+        }
+
+        // Compute gradient for this sample
+        for (0..num_classes) |j| {
+            const grad = (softmax[j] - (if (j == target) @as(T, 1.0) else @as(T, 0.0)) / @as(T, @floatFromInt(count)));
+            const idx = i * num_classes + j;
+            expected_grad[idx] = grad;
+        }
+    }
+
+    for (host_grad.data, expected_grad) |got, expe| {
+        if (@abs(got - expe) > 1e-4) {
+            std.debug.print("Expected grad: {}, Actual grad: {}\n", .{ expe, got });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("SoftmaxCrossEntropy no ignore_index backward test passed.\n", .{});
+}
+
+fn testSoftmaxCrossEntropyWithIgnoreBackward(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 3x4 logits tensor
+    const T = f32;
+    const shape = &[_]usize{ 3, 4 };
+    var logits_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 2.0, 2.0, 2.0 };
+    var gpu_logits = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_logits.deinitAsync(&stream);
+    try gpu_logits.writeFromHostAsync(&logits_data, 0, &stream);
+
+    var var_logits = try base_chain.createVariable(T, gpu_logits.move(), "logits");
+    defer var_logits.destroy();
+
+    // Target: [0, 1, 999], ignore_index = 999
+    const ignore_index: usize = 999;
+    var t_data = [_]usize{ 0, 1, ignore_index };
+    var gpu_t = try GPUTensor(usize).initAsync(&[_]usize{3}, &stream);
+    defer gpu_t.deinitAsync(&stream);
+    try gpu_t.writeFromHostAsync(&t_data, 0, &stream);
+
+    var var_t = try base_chain.createVariable(usize, gpu_t.move(), "t");
+    defer var_t.destroy();
+
+    // Scalar with ignore_index
+    const scalar = SoftmaxCrossEntropy(T).Scalar{ .t = var_t, .ignore_index = ignore_index };
+
+    // Compute loss
+    var loss_var = try softmaxCrossEntropyEx(T, var_logits, scalar, base_chain);
+    defer loss_var.destroy();
+
+    // Backward pass with gy = 1.0
+    try loss_var.backwardEx(base_chain);
+    var grad_var = var_logits.refGrad().?;
+
+    var gpu_grad = grad_var.asUntagged(T).data;
+    var host_grad = try gpu_grad.toHost(allocator, &stream);
+    defer host_grad.deinit(allocator);
+
+    try stream.sync();
+
+    // Compute expected gradient programmatically
+    const num_samples = 3;
+    const num_classes = 4;
+    var expected_grad = try allocator.alloc(T, logits_data.len);
+    defer allocator.free(expected_grad);
+    @memset(expected_grad, 0.0);
+
+    var num_non_ignored: usize = 0;
+    for (0..num_samples) |i| {
+        if (t_data[i] == ignore_index) continue;
+        num_non_ignored += 1;
+    }
+    const count = if (num_non_ignored == 0) 1 else @as(T, @floatFromInt(num_non_ignored));
+
+    for (0..num_samples) |i| {
+        if (t_data[i] == ignore_index) continue;
+
+        const logits_row = logits_data[i * num_classes .. (i + 1) * num_classes];
+        const target = t_data[i];
+
+        // Compute softmax
+        var max_logit: T = logits_row[0];
+        for (logits_row[1..]) |val| {
+            if (val > max_logit) max_logit = val;
+        }
+
+        var sum_exp: T = 0.0;
+        var exps: [num_classes]T = undefined;
+        for (logits_row, 0..) |val, j| {
+            exps[j] = @exp(val - max_logit);
+            sum_exp += exps[j];
+        }
+
+        var softmax: [num_classes]T = undefined;
+        for (0..num_classes) |j| {
+            softmax[j] = exps[j] / sum_exp;
+        }
+
+        // Compute gradient for this sample
+        for (0..num_classes) |j| {
+            const grad = (softmax[j] - (if (j == target) @as(T, 1.0) else @as(T, 0.0)) / count);
+            const idx = i * num_classes + j;
+            expected_grad[idx] = grad;
+        }
+    }
+
+    for (host_grad.data, expected_grad) |got, expe| {
+        if (@abs(got - expe) > 1e-5) {
+            std.debug.print("Expected grad: {}, Actual grad: {}\n", .{ expe, got });
+            return error.TestFailed;
+        }
+    }
+
+    std.debug.print("SoftmaxCrossEntropy with ignore_index backward test passed.\n", .{});
+}
 
 pub fn test1s1i1o() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
@@ -1072,6 +1721,11 @@ pub fn test1s1i1o() !void {
     try testAveragePooling(allocator);
     try testMaskedFill(allocator);
     try testEmbed(allocator);
+    try testSoftmaxCrossEntropyNoIgnoreForward(allocator);
+    try testSoftmaxCrossEntropyWithIgnoreForward(allocator);
+    try testSoftmaxCrossEntropyAllIgnoredForward(allocator);
+    // try testSoftmaxCrossEntropyNoIgnoreBackward(allocator);
+    // try testSoftmaxCrossEntropyWithIgnoreBackward(allocator);
 
     std.debug.print("All scalar tests passed.\n", .{});
 }
