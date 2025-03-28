@@ -1140,7 +1140,7 @@ pub fn LayerNorm(comptime T: type) type {
         pub const Out = T;
 
         pub const Option = struct {
-            eps: T = 1e-5,
+            eps: if (T != BF16) T else f32 = 1e-5,
             context: *Context,
         };
 

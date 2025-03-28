@@ -43,9 +43,9 @@ pub fn arangeAlloc(allocator: std.mem.Allocator, comptime T: type, start: T, sto
     return buf;
 }
 
-pub fn accuracy(comptime T: type, y: *TaggedVar, t: *TaggedVar) !T {
+pub fn accuracy(comptime T: type, y: *TaggedVar, t: *TaggedVar, axis: usize) !T {
     const context = y.getContext();
-    var pred = try y.asUntagged(T).data.argmax(context.allocator, &.{1}, true, context.stream);
+    var pred = try y.asUntagged(T).data.argmax(context.allocator, &.{@intCast(axis)}, true, context.stream);
     defer pred.deinitAsync(context.stream);
 
     try pred.reshape(t.getShape());

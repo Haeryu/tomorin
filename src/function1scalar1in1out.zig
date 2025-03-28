@@ -122,10 +122,10 @@ pub fn Shift(comptime T: type) type {
     return struct {
         in: ?*TaggedVar,
         out: ?*TaggedVar,
-        scalar: T,
+        scalar: if (T != BF16) T else f32,
         base: FunctionBase,
 
-        pub const Scalar = T;
+        pub const Scalar = if (T != BF16) T else f32;
         pub const In = T;
         pub const Out = T;
 
@@ -148,11 +148,11 @@ pub fn Shift(comptime T: type) type {
     };
 }
 
-pub fn shift(comptime T: type, x: *TaggedVar, scalar: T) !*TaggedVar {
+pub fn shift(comptime T: type, x: *TaggedVar, scalar: if (T != BF16) T else f32) !*TaggedVar {
     return try shiftEx(T, x, scalar, x.getContext().current_chain.?);
 }
 
-pub fn shiftEx(comptime T: type, x: *TaggedVar, scalar: T, chain: *Chain) !*TaggedVar {
+pub fn shiftEx(comptime T: type, x: *TaggedVar, scalar: if (T != BF16) T else f32, chain: *Chain) !*TaggedVar {
     return try makefunc(Shift(T), x, scalar, chain);
 }
 
@@ -160,10 +160,10 @@ pub fn Scale(comptime T: type) type {
     return struct {
         in: ?*TaggedVar,
         out: ?*TaggedVar,
-        scalar: T,
+        scalar: if (T != BF16) T else f32,
         base: FunctionBase,
 
-        pub const Scalar = T;
+        pub const Scalar = if (T != BF16) T else f32;
         pub const In = T;
         pub const Out = T;
 
@@ -185,11 +185,11 @@ pub fn Scale(comptime T: type) type {
     };
 }
 
-pub fn scale(comptime T: type, x: *TaggedVar, scalar: T) !*TaggedVar {
+pub fn scale(comptime T: type, x: *TaggedVar, scalar: if (T != BF16) T else f32) !*TaggedVar {
     return try scaleEx(T, x, scalar, x.getContext().current_chain.?);
 }
 
-pub fn scaleEx(comptime T: type, x: *TaggedVar, scalar: T, chain: *Chain) !*TaggedVar {
+pub fn scaleEx(comptime T: type, x: *TaggedVar, scalar: if (T != BF16) T else f32, chain: *Chain) !*TaggedVar {
     return try makefunc(Scale(T), x, scalar, chain);
 }
 
@@ -393,8 +393,8 @@ pub fn MaskedFill(comptime T: type) type {
         base: FunctionBase,
 
         pub const Scalar = struct {
-            mask: GPUTensor(T),
-            val: T,
+            mask: *TaggedVar,
+            val: if (T != BF16) T else f32,
         }; // Mask tensor as the scalar parameter
         pub const In = T;
         pub const Out = T;
@@ -408,35 +408,33 @@ pub fn MaskedFill(comptime T: type) type {
             var y = try x.cloneAsync(context.stream);
             errdefer y.deinitAsync(context.stream);
 
-            try y.maskedFill(&self.scalar.mask, self.scalar.val, context.stream);
+            try y.maskedFill(&self.scalar.mask.asUntagged(T).data, self.scalar.val, context.stream);
             return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             const chain = self.base.chain;
-            const stream = self.base.context.stream;
+            // const stream = self.base.context.stream;
             // Create a constant tensor of 1.0
-            var one_minus_mask = try self.scalar.mask.cloneAsync(stream);
-            defer one_minus_mask.deinitAsync(stream);
-            try one_minus_mask.scale(-1.0, self.base.context.stream);
-            try one_minus_mask.shift(1.0, stream);
+            var one_minus_mask = try scaleEx(T, self.scalar.mask, -1.0, chain);
+            one_minus_mask = try shiftEx(T, one_minus_mask, 1.0, chain);
+
             // Compute 1 - mask
-            const one_minus_mask_var = try chain.createVariable(T, one_minus_mask.move(), null);
-            defer one_minus_mask_var.destroy();
+
             // Compute gx = gy * (1 - mask)
-            const gx = try mulEx(T, gy, one_minus_mask_var, chain);
+            const gx = try mulEx(T, gy, one_minus_mask, chain);
             return gx;
         }
 
-        pub fn predestroy(self: *Self) void {
-            const stream = self.base.context.stream;
-            self.scalar.mask.deinitAsync(stream);
-        }
+        // pub fn predestroy(self: *Self) void {
+        //     const stream = self.base.context.stream;
+        //     self.scalar.mask.deinitAsync(stream);
+        // }
     };
 }
 
 pub fn maskedFill(comptime T: type, x: *TaggedVar, scalar: MaskedFill(T).Scalar) !*TaggedVar {
-    return try averagePoolingEx(T, x, scalar, x.getContext().current_chain.?);
+    return try maskedFillEx(T, x, scalar, x.getContext().current_chain.?);
 }
 
 pub fn maskedFillEx(comptime T: type, x: *TaggedVar, scalar: MaskedFill(T).Scalar, chain: *Chain) !*TaggedVar {
@@ -669,6 +667,87 @@ pub fn softmaxCrossEntropy(
 
 pub fn softmaxCrossEntropyEx(comptime T: type, logits: *TaggedVar, scalar: SoftmaxCrossEntropy(T).Scalar, chain: *Chain) !*TaggedVar {
     return try makefunc(SoftmaxCrossEntropy(T), logits, scalar, chain);
+}
+
+pub fn GetItem(comptime T: type, comptime n_dims: comptime_int) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        scalar: [n_dims]GPUTensor(T).Slice, // reduction axes
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = T;
+        pub const Scalar = [n_dims]GPUTensor(T).Slice;
+
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
+
+        const Self = GetItem(T, n_dims);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            return try x.getItem(context.allocator, &self.scalar, context.stream);
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try getItemGradEx(T, n_dims, gy, .{
+                .original_shape = self.in.?.getShape(),
+                .array = self.scalar,
+            }, self.base.chain);
+        }
+    };
+}
+
+pub fn getItem(comptime T: type, comptime n_dims: comptime_int, x: *TaggedVar, slice: [n_dims]GPUTensor(T).Slice) !*TaggedVar {
+    return try getItemEx(T, n_dims, x, slice, x.getContext().current_chain.?);
+}
+
+pub fn getItemEx(comptime T: type, comptime n_dims: comptime_int, x: *TaggedVar, slice: [n_dims]GPUTensor(T).Slice, chain: *Chain) !*TaggedVar {
+    return try makefunc(GetItem(T, n_dims), x, slice, chain);
+}
+
+pub fn GetItemGrad(comptime T: type, comptime n_dims: comptime_int) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+
+        base: FunctionBase,
+        scalar: Scalar,
+        pub const Scalar = struct {
+            array: [n_dims]GPUTensor(T).Slice,
+            original_shape: []const usize = &.{},
+        };
+
+        pub const In = T;
+        pub const Out = T;
+
+        pub usingnamespace FuncDecorator1Scalar1in1out(Self);
+
+        const Self = GetItemGrad(T, n_dims);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            const context = self.base.context;
+
+            var gx = try GPUTensor(T).initAsync(self.scalar.original_shape, context.stream);
+            errdefer gx.deinitAsync(context.stream);
+            try gx.fill(0.0, context.stream);
+
+            return try gx.getItemGrad(context.allocator, &self.scalar.array, x, context.stream);
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            return try getItemEx(T, n_dims, gy, self.scalar.array, self.base.chain);
+        }
+    };
+}
+
+pub fn getItemGrad(comptime T: type, comptime n_dims: comptime_int, x: *TaggedVar, scalar: GetItemGrad(T, n_dims).Scalar) !*TaggedVar {
+    return try getItemGradEx(T, n_dims, x, scalar, x.getContext().current_chain.?);
+}
+
+pub fn getItemGradEx(comptime T: type, comptime n_dims: comptime_int, x: *TaggedVar, scalar: GetItemGrad(T, n_dims).Scalar, chain: *Chain) !*TaggedVar {
+    return try makefunc(GetItemGrad(T, n_dims), x, scalar, chain);
 }
 
 // tests
@@ -1085,12 +1164,14 @@ fn testMaskedFill(allocator: std.mem.Allocator) !void {
     defer gpu_mask.deinitAsync(&stream);
     try gpu_mask.writeFromHostAsync(&mask_data, 0, &stream);
 
+    const gpu_mask_v = try base_chain.createVariable(T, gpu_mask.move(), "mask");
+
     // Define the scalar fill value
     const num: T = 0.0;
 
     // Apply MaskedFill using maskedFillEx
     var var_y = try maskedFillEx(T, var_x, .{
-        .mask = gpu_mask.move(),
+        .mask = gpu_mask_v,
         .val = num,
     }, base_chain);
     defer var_y.destroy();
@@ -1708,6 +1789,124 @@ fn testSoftmaxCrossEntropyWithIgnoreBackward(allocator: std.mem.Allocator) !void
     std.debug.print("SoftmaxCrossEntropy with ignore_index backward test passed.\n", .{});
 }
 
+fn testGetItem(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Input: 2x3 tensor [[1, 2, 3], [4, 5, 6]]
+    const T = f32;
+    const shape = &[_]usize{ 2, 3 };
+    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    var gpu_input = try GPUTensor(T).initAsync(shape, &stream);
+    defer gpu_input.deinitAsync(&stream);
+    try gpu_input.writeFromHostAsync(&input_data, 0, &stream);
+
+    var var_input = try base_chain.createVariable(T, gpu_input.move(), "input");
+    defer var_input.destroy();
+
+    // Slices: rows 0:2, columns 1:3
+    const SliceType = GPUTensor(T).Slice;
+    const slice = &[_]SliceType{
+        .{ .start = 0, .stop = 2 }, // rows 0 to 1
+        .{ .start = 1, .stop = 3 }, // columns 1 to 2
+    };
+    var var_output = try getItemEx(T, var_input, slice, base_chain);
+    defer var_output.destroy();
+
+    var gpu_output = var_output.asUntagged(T).data;
+    var host_output = try gpu_output.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // Expected: 2x2 tensor [[2, 3], [5, 6]]
+    const expected = [_]T{ 2.0, 3.0, 5.0, 6.0 };
+    for (host_output.data, expected) |got, exp| {
+        if (@abs(got - exp) > 1e-6) return error.TestFailed;
+    }
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 2, 2 }, host_output.base.getShapeConst());
+    std.debug.print("GetItem test passed.\n", .{});
+}
+
+fn testGetItemGrad(allocator: std.mem.Allocator) !void {
+    var stream = try Stream.create();
+    defer stream.destroy();
+
+    var cuda_context = try CudaContext.init();
+    defer cuda_context.deinit();
+
+    var context = try Context.init(allocator, &cuda_context, &stream, .{
+        .init_func_capacity = 10,
+        .init_var_capacity = 10,
+    });
+    defer context.deinit();
+
+    const base_chain = try context.createChain();
+    context.current_chain = base_chain;
+    defer base_chain.clear();
+
+    // Original input shape: 2x3 (for shape inference)
+    const T = f32;
+    const original_shape = &[_]usize{ 2, 3 };
+    var original_input = try GPUTensor(T).initAsync(original_shape, &stream);
+    defer original_input.deinitAsync(&stream);
+    var var_original = try base_chain.createVariable(T, original_input.move(), "original");
+    defer var_original.destroy();
+
+    // Gradient of output (gy): 2x2 tensor [[10, 20], [30, 40]]
+    const gy_shape = &[_]usize{ 2, 2 };
+    var gy_data = [_]T{ 10.0, 20.0, 30.0, 40.0 };
+    var gpu_gy = try GPUTensor(T).initAsync(gy_shape, &stream);
+    defer gpu_gy.deinitAsync(&stream);
+    try gpu_gy.writeFromHostAsync(&gy_data, 0, &stream);
+    var var_gy = try base_chain.createVariable(T, gpu_gy.move(), "gy");
+    defer var_gy.destroy();
+
+    // Slices: rows 0:2, columns 1:3
+    const SliceType = GPUTensor(T).Slice;
+    const slice = &[_]SliceType{
+        .{ .start = 0, .stop = 2 },
+        .{ .start = 1, .stop = 3 },
+    };
+
+    // Forward pass with gy
+    var var_output = try getItemGradEx(T, var_gy, .{
+        .original_shape = original_shape,
+        .slice = slice,
+    }, base_chain);
+    defer var_output.destroy();
+
+    var gpu_output = var_output.asUntagged(T).data;
+    var host_output = try gpu_output.toHost(allocator, &stream);
+    defer host_output.deinit(allocator);
+
+    try stream.sync();
+
+    // Expected: 2x3 tensor [[0, 10, 20], [0, 30, 40]]
+    const expected = [_]T{ 0.0, 10.0, 20.0, 0.0, 30.0, 40.0 };
+    for (host_output.data, expected) |got, exp| {
+        if (@abs(got - exp) > 1e-6) {
+            std.debug.print("got {} exp {}\n", .{ got, exp });
+            return error.TestFailed;
+        }
+    }
+    try std.testing.expectEqualSlices(usize, original_shape, host_output.base.getShapeConst());
+    std.debug.print("GetItemGrad test passed.\n", .{});
+}
+
 pub fn test1s1i1o() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -1724,6 +1923,8 @@ pub fn test1s1i1o() !void {
     try testSoftmaxCrossEntropyNoIgnoreForward(allocator);
     try testSoftmaxCrossEntropyWithIgnoreForward(allocator);
     try testSoftmaxCrossEntropyAllIgnoredForward(allocator);
+    try testGetItemGrad(allocator);
+    try testGetItem(allocator);
     // try testSoftmaxCrossEntropyNoIgnoreBackward(allocator);
     // try testSoftmaxCrossEntropyWithIgnoreBackward(allocator);
 

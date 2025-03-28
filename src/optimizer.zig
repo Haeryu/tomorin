@@ -1,6 +1,7 @@
 const std = @import("std");
 const TaggedVar = @import("variable.zig").TaggedVar;
 const tomo = @import("tomo");
+const BF16 = tomo.BF16;
 const Context = @import("context.zig").Context;
 const Chain = @import("chain.zig").Chain;
 const GPUTensor = tomo.tensor.GPUTensor;
@@ -439,10 +440,10 @@ pub fn Adam(comptime T: type) type {
         context: *Context,
 
         pub const HyperParams = struct {
-            alpha: T = 0.001,
-            beta1: T = 0.9,
-            beta2: T = 0.999,
-            eps: T = 1e-8,
+            alpha: if (T != BF16) T else f32 = 0.001,
+            beta1: if (T != BF16) T else f32 = 0.9,
+            beta2: if (T != BF16) T else f32 = 0.999,
+            eps: if (T != BF16) T else f32 = 1e-8,
 
             pub const default: HyperParams = .{};
         };
@@ -521,8 +522,8 @@ pub fn Adam(comptime T: type) type {
             try v.add(&grad_sq, self.context.stream);
 
             // Compute bias correction factors
-            const fix1 = 1.0 - pow(T, self.hyper_params.beta1, @floatFromInt(self.t));
-            const fix2 = 1.0 - pow(T, self.hyper_params.beta2, @floatFromInt(self.t));
+            const fix1 = 1.0 - pow(if (T != BF16) T else f32, self.hyper_params.beta1, @floatFromInt(self.t));
+            const fix2 = 1.0 - pow(if (T != BF16) T else f32, self.hyper_params.beta2, @floatFromInt(self.t));
 
             // Compute bias-corrected estimates: m_hat and v_hat
             var m_hat = try m.cloneAsync(self.context.stream);
@@ -558,11 +559,11 @@ pub fn AdamW(comptime T: type) type {
         hyper_params: HyperParams,
 
         pub const HyperParams = struct {
-            alpha: T = 0.001,
-            beta1: T = 0.9,
-            beta2: T = 0.999,
-            eps: T = 1e-8,
-            weight_decay: T = 0.0,
+            alpha: if (T != BF16) T else f32 = 0.001,
+            beta1: if (T != BF16) T else f32 = 0.9,
+            beta2: if (T != BF16) T else f32 = 0.999,
+            eps: if (T != BF16) T else f32 = 1e-8,
+            weight_decay: if (T != BF16) T else f32 = 0.0,
             pub const default: HyperParams = .{};
         };
 

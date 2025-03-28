@@ -22,6 +22,7 @@ const expEx = @import("function1in1out.zig").expEx;
 const sumEx = @import("function1in1out.zig").sumEx;
 const mulEx = @import("function2in1out.zig").mulEx;
 const subEx = @import("function2in1out.zig").subEx;
+const getItemGradEx = @import("function1scalar1in1out.zig").getItemGradEx;
 
 pub fn FuncDecorator1Slice1in1out(comptime Self: type) type {
     return struct {
@@ -303,74 +304,6 @@ pub fn logSoftmaxEx(comptime T: type, x: *TaggedVar, shape: []const isize, chain
     return try makefunc(LogSoftmax(T), x, shape, chain);
 }
 
-pub fn GetItem(comptime T: type) type {
-    return struct {
-        in: ?*TaggedVar,
-        out: ?*TaggedVar,
-        slice: []const GPUTensor(T).Slice, // reduction axes
-        base: FunctionBase,
-
-        pub const In = T;
-        pub const Out = T;
-
-        pub usingnamespace FuncDecorator1Slice1in1out(Self);
-
-        const Self = GetItem(T);
-
-        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.context;
-
-            return try x.getItem(context.allocator, self.slice, context.stream);
-        }
-
-        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try getItemGradEx(T, gy, self.slice, self.base.chain);
-        }
-    };
-}
-
-pub fn getItem(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice) !*TaggedVar {
-    return try getItemEx(T, x, slice, x.getContext().current_chain.?);
-}
-
-pub fn getItemEx(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice, chain: *Chain) !*TaggedVar {
-    return try makefunc(GetItem(T), x, slice, chain);
-}
-
-pub fn GetItemGrad(comptime T: type) type {
-    return struct {
-        in: ?*TaggedVar,
-        out: ?*TaggedVar,
-        slice: []const GPUTensor(T).Slice, // slice
-        base: FunctionBase,
-
-        pub const In = T;
-        pub const Out = T;
-
-        pub usingnamespace FuncDecorator1Slice1in1out(Self);
-
-        const Self = GetItemGrad(T);
-
-        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
-            const context = self.base.context;
-
-            return try self.in.?.asUntagged(T).data.getItemGrad(context.allocator, self.slice, x, context.stream);
-        }
-
-        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
-            return try getItemEx(T, gy, self.slice, self.base.chain);
-        }
-    };
-}
-
-pub fn getItemGrad(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice) !*TaggedVar {
-    return try getItemGradEx(T, x, slice, x.getContext().current_chain.?);
-}
-
-pub fn getItemGradEx(comptime T: type, x: *TaggedVar, slice: []const GPUTensor(T).Slice, chain: *Chain) !*TaggedVar {
-    return try makefunc(GetItemGrad(T), x, slice, chain);
-}
-
 pub fn TransposeEx(comptime T: type) type {
     return struct {
         in: ?*TaggedVar,
@@ -607,121 +540,6 @@ fn testLogSoftmax(allocator: std.mem.Allocator) !void {
         if (@abs(got - exp) > 1e-3) return error.TestFailed;
     }
     std.debug.print("LogSoftmax test passed.\n", .{});
-}
-
-fn testGetItem(allocator: std.mem.Allocator) !void {
-    var stream = try Stream.create();
-    defer stream.destroy();
-
-    var cuda_context = try CudaContext.init();
-    defer cuda_context.deinit();
-
-    var context = try Context.init(allocator, &cuda_context, &stream, .{
-        .init_func_capacity = 10,
-        .init_var_capacity = 10,
-    });
-    defer context.deinit();
-
-    const base_chain = try context.createChain();
-    context.current_chain = base_chain;
-    defer base_chain.clear();
-
-    // Input: 2x3 tensor [[1, 2, 3], [4, 5, 6]]
-    const T = f32;
-    const shape = &[_]usize{ 2, 3 };
-    var input_data = [_]T{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
-    var gpu_input = try GPUTensor(T).initAsync(shape, &stream);
-    defer gpu_input.deinitAsync(&stream);
-    try gpu_input.writeFromHostAsync(&input_data, 0, &stream);
-
-    var var_input = try base_chain.createVariable(T, gpu_input.move(), "input");
-    defer var_input.destroy();
-
-    // Slices: rows 0:2, columns 1:3
-    const SliceType = GPUTensor(T).Slice;
-    const slice = &[_]SliceType{
-        .{ .start = 0, .stop = 2 }, // rows 0 to 1
-        .{ .start = 1, .stop = 3 }, // columns 1 to 2
-    };
-    var var_output = try getItemEx(T, var_input, slice, base_chain);
-    defer var_output.destroy();
-
-    var gpu_output = var_output.asUntagged(T).data;
-    var host_output = try gpu_output.toHost(allocator, &stream);
-    defer host_output.deinit(allocator);
-
-    try stream.sync();
-
-    // Expected: 2x2 tensor [[2, 3], [5, 6]]
-    const expected = [_]T{ 2.0, 3.0, 5.0, 6.0 };
-    for (host_output.data, expected) |got, exp| {
-        if (@abs(got - exp) > 1e-6) return error.TestFailed;
-    }
-    try std.testing.expectEqualSlices(usize, &[_]usize{ 2, 2 }, host_output.base.getShapeConst());
-    std.debug.print("GetItem test passed.\n", .{});
-}
-
-fn testGetItemGrad(allocator: std.mem.Allocator) !void {
-    var stream = try Stream.create();
-    defer stream.destroy();
-
-    var cuda_context = try CudaContext.init();
-    defer cuda_context.deinit();
-
-    var context = try Context.init(allocator, &cuda_context, &stream, .{
-        .init_func_capacity = 10,
-        .init_var_capacity = 10,
-    });
-    defer context.deinit();
-
-    const base_chain = try context.createChain();
-    context.current_chain = base_chain;
-    defer base_chain.clear();
-
-    // Original input shape: 2x3 (for shape inference)
-    const T = f32;
-    const original_shape = &[_]usize{ 2, 3 };
-    var original_input = try GPUTensor(T).initAsync(original_shape, &stream);
-    defer original_input.deinitAsync(&stream);
-    var var_original = try base_chain.createVariable(T, original_input.move(), "original");
-    defer var_original.destroy();
-
-    // Gradient of output (gy): 2x2 tensor [[10, 20], [30, 40]]
-    const gy_shape = &[_]usize{ 2, 2 };
-    var gy_data = [_]T{ 10.0, 20.0, 30.0, 40.0 };
-    var gpu_gy = try GPUTensor(T).initAsync(gy_shape, &stream);
-    defer gpu_gy.deinitAsync(&stream);
-    try gpu_gy.writeFromHostAsync(&gy_data, 0, &stream);
-    var var_gy = try base_chain.createVariable(T, gpu_gy.move(), "gy");
-    defer var_gy.destroy();
-
-    // Slices: rows 0:2, columns 1:3
-    const SliceType = GPUTensor(T).Slice;
-    const slice = &[_]SliceType{
-        .{ .start = 0, .stop = 2 },
-        .{ .start = 1, .stop = 3 },
-    };
-
-    // Forward pass with gy
-    var var_output = try getItemGradEx(T, var_gy, slice, base_chain);
-    defer var_output.destroy();
-
-    var gpu_output = var_output.asUntagged(T).data;
-    var host_output = try gpu_output.toHost(allocator, &stream);
-    defer host_output.deinit(allocator);
-
-    try stream.sync();
-
-    // Expected: 2x3 tensor [[0, 10, 20], [0, 30, 40]]
-    const expected = [_]T{ 0.0, 10.0, 20.0, 0.0, 30.0, 40.0 };
-    for (host_output.data, expected) |got, exp| {
-        if (@abs(got - exp) > 1e-6) {
-            std.debug.print("got {} exp {}\n", .{ got, exp });
-            return error.TestFailed;
-        }
-    }
-    try std.testing.expectEqualSlices(usize, original_shape, host_output.base.getShapeConst());
-    std.debug.print("GetItemGrad test passed.\n", .{});
 }
 
 fn testLogSoftmaxBackward(allocator: std.mem.Allocator) !void {
@@ -1012,8 +830,8 @@ pub fn test1slice1i1o() !void {
     try testBroadCastTo(allocator);
     try testSoftmax(allocator);
     try testLogSoftmax(allocator);
-    try testGetItem(allocator);
-    // try testGetItemGrad(allocator);
+    //try testGetItem(allocator);
+
     try testLogSoftmaxBackward(allocator);
     try testTranspose(allocator);
     // try testSoftmaxBackwardPass(allocator); -> error

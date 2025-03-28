@@ -77,15 +77,17 @@ pub const Function = struct {
     }
 
     pub fn unchain(self: *Function) void {
+        if (self.chain.func_chain == self) {
+            self.chain.func_chain = self.next;
+        }
+
         if (self.prev) |prev| {
             prev.next = self.next;
         }
         if (self.next) |next| {
             next.prev = self.prev;
         }
-        if (self.chain.func_chain == self) {
-            self.chain.func_chain = self.next;
-        }
+
         self.prev = null;
         self.next = null;
     }

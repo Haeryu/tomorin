@@ -1,6 +1,7 @@
 const std = @import("std");
 const TaggedVar = @import("variable.zig").TaggedVar;
 const tomo = @import("tomo");
+const BF16 = tomo.BF16;
 const Context = @import("context.zig").Context;
 const Chain = @import("chain.zig").Chain;
 const GPUTensor = tomo.tensor.GPUTensor;
@@ -26,6 +27,7 @@ const scaleEx = function.scaleEx;
 const maskedFillEx = function.maskedFillEx;
 const softmaxEx = function.softmaxEx;
 const geluEx = function.geluEx;
+const getItemEx = function.getItemEx;
 
 const dbg = @import("util.zig").debugPrintGpuTensor;
 
@@ -392,23 +394,51 @@ pub fn Linear(comptime T: type) type {
                 self.fields.w = try self.initW();
             }
 
-            return if (self.fields.b) |b| try linearEx(
+            if (x.getShape().len == 2) {
+                return if (self.fields.b) |b| try linearEx(
+                    T,
+                    x,
+                    self.fields.w.?,
+                    try broadcastToEx(
+                        T,
+                        b,
+                        &.{ x.getRow(), self.fields.w.?.getCol() },
+                        chain,
+                    ),
+                    chain,
+                ) else try matmulEx(
+                    T,
+                    x,
+                    self.fields.w.?,
+                    chain,
+                );
+            }
+            const x_flat = try reshapeEx(T, x, &.{ x.asUntagged(T).data.calcLen() / x.getCol(), x.getCol() }, chain);
+            const out_flat = if (self.fields.b) |b| try linearEx(
                 T,
-                x,
+                x_flat,
                 self.fields.w.?,
                 try broadcastToEx(
                     T,
                     b,
-                    &.{ x.getRow(), self.fields.w.?.getCol() },
+                    &.{ x.asUntagged(T).data.calcLen() / x.getCol(), self.fields.w.?.getCol() },
                     chain,
                 ),
                 chain,
             ) else try matmulEx(
                 T,
-                x,
+                x_flat,
                 self.fields.w.?,
                 chain,
             );
+            var out_shape: [GPUTensor(T).max_rank]usize = undefined;
+            for (x.getShape(), 0..) |xs, i| {
+                out_shape[i] = xs;
+            }
+            out_shape[x.getShape().len - 1] = out_flat.getCol();
+            const out = try reshapeEx(T, out_flat, out_shape[0..x.getShape().len], chain);
+
+            return out;
         }
     };
 }
@@ -1114,8 +1144,13 @@ pub fn LayerNorm(comptime T: type) type {
             const x_shape = x.getShape();
             var axes: []const isize = undefined;
             if (x_shape.len == 4) {
+                // 4D input: [batch, channels, height, width]
                 axes = &.{ 0, 2, 3 };
+            } else if (x_shape.len == 3) {
+                // 3D input: [batch, sequence_length, features]
+                axes = &.{ 0, 1 };
             } else if (x_shape.len == 2) {
+                // 2D input: [batch, features]
                 axes = &.{0};
             } else {
                 return error.UnsupportedInputShape;
@@ -1139,8 +1174,8 @@ pub fn LayerNorm(comptime T: type) type {
             }
         }
 
-        pub fn forward(self: *Self, x: *TaggedVar, eps: T, chain: *Chain) !*TaggedVar {
-            if (self.fields.avg_mean == null) {
+        pub fn forward(self: *Self, x: *TaggedVar, eps: if (T != BF16) T else f32, chain: *Chain) !*TaggedVar {
+            if (self.fields.gamma == null) {
                 try self.initParams(x);
             }
 
@@ -1166,10 +1201,10 @@ pub fn Dropout(comptime T: type) type {
             &.{},
             &.{},
         ),
-        dropout_ratio: T,
+        dropout_ratio: if (T != BF16) T else f32,
         const Self = @This();
 
-        pub fn init(dropout_ratio: T) Self {
+        pub fn init(dropout_ratio: if (T != BF16) T else f32) Self {
             return .{
                 .fields = .{},
                 .dropout_ratio = dropout_ratio,
@@ -1709,13 +1744,13 @@ pub fn CausalSelfAttention(comptime T: type) type {
             n_head: usize,
             block_size: usize,
             nobias: bool,
-            dropout_ratio: T,
+            dropout_ratio: if (T != tomo.BF16) T else f32,
         };
 
         const Self = @This();
 
         pub fn init(
-            config: *const Config,
+            config: Config,
             context: *Context,
             chain: *Chain,
         ) !Self {
@@ -1727,11 +1762,11 @@ pub fn CausalSelfAttention(comptime T: type) type {
             const attn_dropout: Dropout(T) = .init(config.dropout_ratio);
             const resid_dropout: Dropout(T) = .init(config.dropout_ratio);
 
-            var bias: GPUTensor(T) = try .initAsync(.{ config.block_size, config.block_size }, context.stream);
+            var bias: GPUTensor(T) = try .initAsync(&.{ config.block_size, config.block_size }, context.stream);
             errdefer bias.deinitAsync(context.stream);
             try bias.fill(1.0, context.stream);
             try bias.tril(0.0, context.stream);
-            try bias.reshape(.{ 1, 1, config.block_size, config.block_size });
+            try bias.reshape(&.{ 1, 1, config.block_size, config.block_size });
 
             return .{
                 .fields = .{
@@ -1757,10 +1792,28 @@ pub fn CausalSelfAttention(comptime T: type) type {
             const t = x_shape[1];
             const c = x_shape[2];
 
-            if (t > self.bias.getShape()[2]) return error.SequenceLengthExceedsBlockSize;
+            if (t > self.bias.base.getShape()[2]) return error.SequenceLengthExceedsBlockSize;
 
-            const attn = try self.fields.c_attn.forward(x, chain);
-            var q, var k, var v = try splitEx(3, T, attn, 2, chain);
+            const qkv = try self.fields.c_attn.forward(x, chain);
+            // var q, var k, var v = try splitEx(3, T, qkv, 2, chain);
+
+            const split_size = c; // c = x_shape[2], size of each split along axis 2
+            var q = try getItemEx(T, 3, qkv, .{
+                .all,
+                .all,
+                .{ .start = 0, .stop = @intCast(split_size), .step = 1 },
+            }, chain);
+            var k = try getItemEx(T, 3, qkv, .{
+                .all,
+                .all,
+                .{ .start = @intCast(split_size), .stop = @intCast(2 * split_size), .step = 1 },
+            }, chain);
+            var v = try getItemEx(T, 3, qkv, .{
+                .all,
+                .all,
+                .{ .start = @intCast(2 * split_size), .stop = @intCast(3 * split_size), .step = 1 },
+            }, chain);
+
             q = try reshapeEx(T, q, &.{ b, t, self.n_head, c / self.n_head }, chain);
             k = try reshapeEx(T, k, &.{ b, t, self.n_head, c / self.n_head }, chain);
             v = try reshapeEx(T, v, &.{ b, t, self.n_head, c / self.n_head }, chain);
@@ -1770,7 +1823,7 @@ pub fn CausalSelfAttention(comptime T: type) type {
 
             const k_transpose = try transposeExEx(T, k, &.{ 0, 1, 3, 2 }, chain);
             var att = try matmulEx(T, q, k_transpose, chain);
-            att = try scaleEx(T, att, 1.0 / @sqrt(@as(T, @floatFromInt(k_transpose.getShape()[k_transpose.getShape().len - 1]))));
+            att = try scaleEx(T, att, 1.0 / @sqrt(@as(if (T != BF16) T else f32, @floatFromInt(k_transpose.getShape()[k_transpose.getShape().len - 1]))), chain);
 
             var mask = try self.bias.getItem(
                 self.context.allocator,
@@ -1779,31 +1832,32 @@ pub fn CausalSelfAttention(comptime T: type) type {
                     .all,
                     .{
                         .start = 0,
-                        .stop = t,
+                        .stop = @intCast(t),
                         .step = 1,
                     },
                     .{
                         .start = 0,
-                        .stop = t,
+                        .stop = @intCast(t),
                         .step = 1,
                     },
                 },
                 self.context.stream,
             );
             defer mask.deinitAsync(self.context.stream);
-            var mask_broad = try mask.broadcastTo(att.getShape(), self.context.stream);
-            defer mask_broad.deinitAsync(self.context.stream);
+            const mask_var = try chain.createVariable(T, mask.move(), null);
+            const mask_broad = try broadcastToEx(T, mask_var, att.getShape(), chain);
 
             att = try maskedFillEx(
                 T,
                 att,
                 .{
-                    .mask = mask_broad.move(),
-                    .val = -std.math.inf(T),
+                    .mask = mask_broad,
+                    //.val = -std.math.inf(T),
+                    .val = -1e9,
                 },
                 chain,
             );
-            att = try softmaxEx(T, att, .{3}, chain);
+            att = try softmaxEx(T, att, &.{3}, chain);
             att = try self.fields.attn_dropout.forward(att, train, chain);
             var y = try matmulEx(T, att, v, chain);
             y = try transposeExEx(T, y, &.{ 0, 2, 1, 3 }, chain);
@@ -1817,7 +1871,7 @@ pub fn CausalSelfAttention(comptime T: type) type {
 }
 
 pub fn Gelu(comptime T: type) type {
-    struct {
+    return struct {
         pub usingnamespace LayerDecorator(Self);
 
         fields: LayerFieldsFactory(

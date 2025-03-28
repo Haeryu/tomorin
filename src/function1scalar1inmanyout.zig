@@ -77,7 +77,11 @@ pub fn FuncDecorator1Scalar1inManyout(comptime Self: type) type {
             var gy_list: [Self.out]*TaggedVar = undefined;
             for (self.outs, 0..) |out_opt, i| {
                 const out = out_opt orelse return error.MissingOutput;
-                gy_list[i] = out.asUntaggedConst(Self.Out).grad orelse return error.MissingGradient;
+                gy_list[i] = out.refGrad() orelse {
+                    std.debug.print("{} {} {s}\n", .{ Self.out, i, @typeName(Self) });
+                    // return error.MissingGradient;
+                    continue;
+                };
             }
 
             const gx = try self.backward(&gy_list);

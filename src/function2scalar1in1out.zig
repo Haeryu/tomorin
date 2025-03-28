@@ -229,13 +229,13 @@ pub fn Dropout(comptime T: type) type {
     return struct {
         in: ?*TaggedVar,
         out: ?*TaggedVar,
-        scalar1: T, // dropout_ratio
+        scalar1: if (T != BF16) T else f32, // dropout_ratio
         scalar2: bool, // train
         base: FunctionBase,
 
         mask: ?*TaggedVar = null,
 
-        pub const Scalar1 = T;
+        pub const Scalar1 = if (T != BF16) T else f32;
         pub const Scalar2 = bool;
         pub const In = T;
         pub const Out = T;
@@ -286,11 +286,11 @@ pub fn Dropout(comptime T: type) type {
     };
 }
 
-pub fn dropout(comptime T: type, x: *TaggedVar, dropout_ratio: T, train: bool) !*TaggedVar {
+pub fn dropout(comptime T: type, x: *TaggedVar, dropout_ratio: if (T != BF16) T else f32, train: bool) !*TaggedVar {
     return try dropoutEx(T, x, dropout_ratio, train, x.getContext().current_chain.?);
 }
 
-pub fn dropoutEx(comptime T: type, x: *TaggedVar, dropout_ratio: T, train: bool, chain: *Chain) !*TaggedVar {
+pub fn dropoutEx(comptime T: type, x: *TaggedVar, dropout_ratio: if (T != BF16) T else f32, train: bool, chain: *Chain) !*TaggedVar {
     return try makefunc(Dropout(T), x, dropout_ratio, train, chain);
 }
 
