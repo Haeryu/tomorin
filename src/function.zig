@@ -195,8 +195,8 @@ pub fn FuncDecorator1in1outBase(comptime Self: type) type {
 
             const gx = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
 
-            if (self.in.?.asUntaggedConst(Self.Out).grad) |in_grad| {
-                self.in.?.setGrad(try add(Self.Out, in_grad, gx));
+            if (self.in.?.asUntaggedConst(Self.In).grad) |in_grad| {
+                self.in.?.setGrad(try add(Self.In, in_grad, gx));
             } else {
                 self.in.?.setGrad(gx);
             }
@@ -297,13 +297,13 @@ pub fn FuncDecorator2in1outBase(comptime Self: type) type {
 
             const gx1, const gx2 = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
 
-            if (self.in1.?.asUntaggedConst(Self.Out).grad) |in_grad1| {
-                self.in1.?.setGrad(try add(Self.Out, in_grad1, gx1));
+            if (self.in1.?.asUntaggedConst(Self.In1).grad) |in_grad1| {
+                self.in1.?.setGrad(try add(Self.In1, in_grad1, gx1));
             } else {
                 self.in1.?.setGrad(gx1);
             }
-            if (self.in2.?.asUntaggedConst(Self.Out).grad) |in_grad2| {
-                self.in2.?.setGrad(try add(Self.Out, in_grad2, gx2));
+            if (self.in2.?.asUntaggedConst(Self.In2).grad) |in_grad2| {
+                self.in2.?.setGrad(try add(Self.In2, in_grad2, gx2));
             } else {
                 self.in2.?.setGrad(gx2);
             }
@@ -411,18 +411,18 @@ pub fn FuncDecorator3in1outBase(comptime Self: type) type {
 
             const gx1, const gx2, const gx3 = try self.backward(self.out.?.asUntaggedConst(Self.Out).grad.?);
 
-            if (self.in1.?.asUntaggedConst(Self.Out).grad) |in_grad1| {
-                self.in1.?.setGrad(try add(Self.Out, in_grad1, gx1));
+            if (self.in1.?.asUntaggedConst(Self.In1).grad) |in_grad1| {
+                self.in1.?.setGrad(try add(Self.In1, in_grad1, gx1));
             } else {
                 self.in1.?.setGrad(gx1);
             }
-            if (self.in2.?.asUntaggedConst(Self.Out).grad) |in_grad2| {
-                self.in2.?.setGrad(try add(Self.Out, in_grad2, gx2));
+            if (self.in2.?.asUntaggedConst(Self.In2).grad) |in_grad2| {
+                self.in2.?.setGrad(try add(Self.In2, in_grad2, gx2));
             } else {
                 self.in2.?.setGrad(gx2);
             }
-            if (self.in3.?.asUntaggedConst(Self.Out).grad) |in_grad3| {
-                self.in3.?.setGrad(try add(Self.Out, in_grad3, gx3));
+            if (self.in3.?.asUntaggedConst(Self.In3).grad) |in_grad3| {
+                self.in3.?.setGrad(try add(Self.In3, in_grad3, gx3));
             } else {
                 self.in3.?.setGrad(gx3);
             }

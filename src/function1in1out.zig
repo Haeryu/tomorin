@@ -702,6 +702,46 @@ pub fn reluEx(comptime T: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
     return try makefunc(Relu(T), x, chain);
 }
 
+pub fn Cast(comptime T: type, comptime U: type) type {
+    return struct {
+        in: ?*TaggedVar,
+        out: ?*TaggedVar,
+        base: FunctionBase,
+
+        pub const In = T;
+        pub const Out = U;
+
+        pub usingnamespace FuncDecorator1in1out(Self);
+
+        const Self = Cast(T, U);
+
+        pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(U) {
+            const context = self.base.context;
+
+            var y = try x.cast(U, context.stream);
+            defer y.deinitAsync(context.stream);
+
+            return y.move();
+        }
+
+        pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
+            const context = self.base.context;
+            var casted = try gy.asUntagged(U).data.cast(T, context.stream);
+            defer casted.deinitAsync(context.stream);
+
+            return try context.current_chain.?.createVariable(T, casted.move(), null);
+        }
+    };
+}
+
+pub fn cast(comptime T: type, comptime U: type, x: *TaggedVar) !*TaggedVar {
+    return try castEx(T, U, x, x.getContext().current_chain.?);
+}
+
+pub fn castEx(comptime T: type, comptime U: type, x: *TaggedVar, chain: *Chain) !*TaggedVar {
+    return try makefunc(Cast(T, U), x, chain);
+}
+
 pub fn Gelu(comptime T: type) type {
     return struct {
         in: ?*TaggedVar,

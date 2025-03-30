@@ -28,6 +28,7 @@ const maskedFillEx = function.maskedFillEx;
 const softmaxEx = function.softmaxEx;
 const geluEx = function.geluEx;
 const getItemEx = function.getItemEx;
+const castEx = function.castEx;
 
 const dbg = @import("util.zig").debugPrintGpuTensor;
 
@@ -1191,6 +1192,97 @@ pub fn LayerNorm(comptime T: type) type {
                 },
                 chain,
             );
+        }
+    };
+}
+
+// quick and dirty impl
+pub fn LayerNormMixed(comptime T: type, comptime U: type) type {
+    return struct {
+        pub usingnamespace LayerDecorator(Self);
+        fields: LayerFieldsFactory(
+            &.{
+                "gamma",
+                "beta",
+            },
+            &.{},
+        ),
+        context: *Context,
+        chain: *Chain,
+        const Self = @This();
+
+        pub fn init(
+            context: *Context,
+            chain: *Chain,
+        ) Self {
+            return .{
+                .fields = .{
+                    .gamma = null,
+                    .beta = null,
+                },
+                .context = context,
+                .chain = chain,
+            };
+        }
+
+        pub fn initParams(self: *Self, x: *TaggedVar) !void {
+            const allocator = self.context.allocator;
+            const x_shape = x.getShape();
+            var axes: []const isize = undefined;
+            if (x_shape.len == 4) {
+                // 4D input: [batch, channels, height, width]
+                axes = &.{ 0, 2, 3 };
+            } else if (x_shape.len == 3) {
+                // 3D input: [batch, sequence_length, features]
+                axes = &.{ 0, 1 };
+            } else if (x_shape.len == 2) {
+                // 2D input: [batch, features]
+                axes = &.{0};
+            } else {
+                return error.UnsupportedInputShape;
+            }
+            const keepdims = try GPUTensor(T).computeOutShape(allocator, x_shape, axes, true);
+            defer allocator.free(keepdims);
+
+            if (self.fields.gamma == null) {
+                var one: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer one.deinitAsync(self.context.stream);
+                try one.fill(1.0, self.context.stream);
+
+                self.fields.gamma = try self.chain.createVariable(T, one.move(), "gamma");
+            }
+            if (self.fields.beta == null) {
+                var zero: GPUTensor(T) = try .initAsync(keepdims, self.context.stream);
+                errdefer zero.deinitAsync(self.context.stream);
+                try zero.fill(0.0, self.context.stream);
+
+                self.fields.beta = try self.chain.createVariable(T, zero.move(), "beta");
+            }
+        }
+
+        pub fn forward(self: *Self, x: *TaggedVar, eps: if (T != BF16) T else f32, chain: *Chain) !*TaggedVar {
+            if (self.fields.gamma == null) {
+                try self.initParams(x);
+            }
+
+            const x_cast = try castEx(T, U, x, chain);
+            const gamma_cast = try castEx(T, U, self.fields.gamma.?, chain);
+            const beta_cast = try castEx(T, U, self.fields.beta.?, chain);
+
+            var res = try layerNormEx(
+                U,
+                x_cast,
+                gamma_cast,
+                beta_cast,
+                .{
+                    .eps = eps,
+                    .context = self.context,
+                },
+                chain,
+            );
+            res = try castEx(U, T, res, chain);
+
+            return res;
         }
     };
 }

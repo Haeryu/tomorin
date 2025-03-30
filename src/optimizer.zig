@@ -488,12 +488,12 @@ pub fn Adam(comptime T: type) type {
         pub fn updateOne(self: *Self, param: *TaggedVar) !void {
             // Initialize moment tensors (m and v) if they don’t exist for this parameter
             if (!self.ms.contains(param)) {
-                var zeros_m: GPUTensor(T) = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
+                var zeros_m: GPUTensor(T) = try .initAsync(param.getShape(), self.context.stream);
                 errdefer zeros_m.deinitAsync(self.context.stream);
                 try zeros_m.fill(0.0, self.context.stream);
                 try self.ms.put(self.context.allocator, param, zeros_m.move());
 
-                var zeros_v: GPUTensor(T) = try GPUTensor(T).initAsync(param.asUntagged(T).data.base.getShape(), self.context.stream);
+                var zeros_v: GPUTensor(T) = try .initAsync(param.getShape(), self.context.stream);
                 errdefer zeros_v.deinitAsync(self.context.stream);
                 try zeros_v.fill(0.0, self.context.stream);
                 try self.vs.put(self.context.allocator, param, zeros_v.move());
