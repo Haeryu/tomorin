@@ -414,6 +414,7 @@ pub fn Linear(comptime T: type) type {
                 );
             }
             const x_flat = try reshapeEx(T, x, &.{ x.asUntagged(T).data.calcLen() / x.getCol(), x.getCol() }, chain);
+
             const out_flat = if (self.fields.b) |b| try linearEx(
                 T,
                 x_flat,
@@ -1006,7 +1007,7 @@ pub fn VGG16(comptime T: type) type {
             // y = try reluEx(T, try self.fields.fc8.forward(y, chain), chain);
             y = try self.fields.out.forward(y, chain);
 
-            try dbg(T, &y.asUntaggedConst(T).data, y.getContext());
+            // try dbg(T, &y.asUntaggedConst(T).data, y.getContext());
 
             return y;
         }
@@ -1763,9 +1764,9 @@ pub fn CausalSelfAttention(comptime T: type) type {
             const resid_dropout: Dropout(T) = .init(config.dropout_ratio);
 
             var bias: GPUTensor(T) = try .initAsync(&.{ config.block_size, config.block_size }, context.stream);
-            errdefer bias.deinitAsync(context.stream);
-            try bias.fill(1.0, context.stream);
-            try bias.tril(0.0, context.stream);
+            defer bias.deinitAsync(context.stream);
+            try bias.fill(0.0, context.stream);
+            try bias.triu(1.0, context.stream);
             try bias.reshape(&.{ 1, 1, config.block_size, config.block_size });
 
             return .{
@@ -1777,7 +1778,7 @@ pub fn CausalSelfAttention(comptime T: type) type {
                 },
                 .n_head = config.n_head,
                 .n_embd = config.n_embd,
-                .bias = bias,
+                .bias = bias.move(),
                 .context = context,
             };
         }
@@ -1795,6 +1796,7 @@ pub fn CausalSelfAttention(comptime T: type) type {
             if (t > self.bias.base.getShape()[2]) return error.SequenceLengthExceedsBlockSize;
 
             const qkv = try self.fields.c_attn.forward(x, chain);
+
             // var q, var k, var v = try splitEx(3, T, qkv, 2, chain);
 
             const split_size = c; // c = x_shape[2], size of each split along axis 2
@@ -1816,13 +1818,16 @@ pub fn CausalSelfAttention(comptime T: type) type {
 
             q = try reshapeEx(T, q, &.{ b, t, self.n_head, c / self.n_head }, chain);
             k = try reshapeEx(T, k, &.{ b, t, self.n_head, c / self.n_head }, chain);
+
             v = try reshapeEx(T, v, &.{ b, t, self.n_head, c / self.n_head }, chain);
             q = try transposeExEx(T, q, &.{ 0, 2, 1, 3 }, chain); // (B, nh, T, hs)
             k = try transposeExEx(T, k, &.{ 0, 2, 1, 3 }, chain); // (B, nh, T, hs)
             v = try transposeExEx(T, v, &.{ 0, 2, 1, 3 }, chain); // (B, nh, T, hs)
 
             const k_transpose = try transposeExEx(T, k, &.{ 0, 1, 3, 2 }, chain);
+
             var att = try matmulEx(T, q, k_transpose, chain);
+
             att = try scaleEx(T, att, 1.0 / @sqrt(@as(if (T != BF16) T else f32, @floatFromInt(k_transpose.getShape()[k_transpose.getShape().len - 1]))), chain);
 
             var mask = try self.bias.getItem(
@@ -1847,6 +1852,9 @@ pub fn CausalSelfAttention(comptime T: type) type {
             const mask_var = try chain.createVariable(T, mask.move(), null);
             const mask_broad = try broadcastToEx(T, mask_var, att.getShape(), chain);
 
+            // try dbg(BF16, &mask_broad.asUntagged(BF16).data, self.context);
+            // std.time.sleep(5 * std.time.ns_per_s);
+
             att = try maskedFillEx(
                 T,
                 att,
@@ -1857,7 +1865,12 @@ pub fn CausalSelfAttention(comptime T: type) type {
                 },
                 chain,
             );
+
+            // try dbg(BF16, &att.asUntagged(BF16).data, self.context);
+            // std.time.sleep(5 * std.time.ns_per_s);
+
             att = try softmaxEx(T, att, &.{3}, chain);
+
             att = try self.fields.attn_dropout.forward(att, train, chain);
             var y = try matmulEx(T, att, v, chain);
             y = try transposeExEx(T, y, &.{ 0, 2, 1, 3 }, chain);

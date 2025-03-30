@@ -325,7 +325,7 @@ pub fn Tanh(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.tanh(context.stream);
             return y.move();
@@ -367,7 +367,7 @@ pub fn Transpose(comptime T: type) type {
             const context = self.base.context;
 
             var y = try x.transpose(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             return y.move();
         }
@@ -481,7 +481,7 @@ pub fn Sum(comptime T: type) type {
             self.x_shape = x.base.getShapeConst();
 
             var y = try x.sum(context.allocator, self.axis, true, context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             return y.move();
         }
@@ -597,7 +597,7 @@ pub fn SumTo(comptime T: type) type {
             self.x_shape = x.base.getShapeConst();
 
             var y = try x.sumTo(context.allocator, self.shape, context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             return y.move();
         }
@@ -637,7 +637,7 @@ pub fn Sigmoid(comptime T: type) type {
             // y = xp.tanh(x * 0.5) * 0.5 + 0.5  # Better implementation
 
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.sigmoid(context.stream);
             return y.move();
@@ -677,7 +677,7 @@ pub fn Relu(comptime T: type) type {
             const context = self.base.context;
 
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.relu(context.stream);
             return y.move();
@@ -686,7 +686,7 @@ pub fn Relu(comptime T: type) type {
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             const context = self.base.context;
             var drelu = try gy.asUntagged(T).data.cloneAsync(context.stream);
-            errdefer drelu.deinitAsync(context.stream);
+            defer drelu.deinitAsync(context.stream);
             try drelu.reluBackward(&self.in.?.asUntagged(T).data, context.stream);
 
             return try context.current_chain.?.createVariable(T, drelu.move(), null);
@@ -719,7 +719,7 @@ pub fn Gelu(comptime T: type) type {
             const context = self.base.context;
 
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.gelu(context.stream);
             return y.move();
@@ -728,7 +728,7 @@ pub fn Gelu(comptime T: type) type {
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             const context = self.base.context;
             var dgelu = try gy.asUntagged(T).data.cloneAsync(context.stream);
-            errdefer dgelu.deinitAsync(context.stream);
+            defer dgelu.deinitAsync(context.stream);
             try dgelu.geluBackward(&self.in.?.asUntagged(T).data, context.stream);
 
             return try context.current_chain.?.createVariable(T, dgelu.move(), null);
@@ -761,7 +761,7 @@ pub fn LeakyRelu(comptime T: type) type {
             const context = self.base.context;
 
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.leakyRelu(context.stream);
             return y.move();
@@ -770,7 +770,7 @@ pub fn LeakyRelu(comptime T: type) type {
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
             const context = self.base.context;
             var dleaky_relu = try gy.asUntagged(T).data.cloneAsync(context.stream);
-            errdefer dleaky_relu.deinitAsync(context.stream);
+            defer dleaky_relu.deinitAsync(context.stream);
             try dleaky_relu.leakyReluBackward(&self.in.?.asUntagged(T).data, context.stream);
 
             return try context.current_chain.?.createVariable(T, dleaky_relu.move(), null);

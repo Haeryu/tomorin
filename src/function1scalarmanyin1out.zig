@@ -250,7 +250,7 @@ pub fn Concat(comptime n_in: usize, comptime T: type) type {
 
             // Create output tensor
             var output = try GPUTensor(T).initAsync(output_shape, stream);
-            errdefer output.deinitAsync(stream);
+            defer output.deinitAsync(stream);
 
             // Concatenate inputs
             var offset: usize = 0;
@@ -268,7 +268,7 @@ pub fn Concat(comptime n_in: usize, comptime T: type) type {
                 try output.setItem(allocator, slices[0..rank], &x, stream);
             }
 
-            return output;
+            return output.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) ![n_in]*TaggedVar {

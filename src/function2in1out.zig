@@ -25,6 +25,7 @@ const squareEx = @import("function1in1out.zig").squareEx;
 const transposeEx = @import("function1in1out.zig").transposeEx;
 const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
 const transposeExEx = @import("function1slice1in1out.zig").transposeExEx;
+const dbg = @import("util.zig").debugPrintGpuTensor;
 
 pub fn FuncDecorator2in1out(comptime Self: type) type {
     return struct {
@@ -270,11 +271,11 @@ pub fn Div(comptime T: type) type {
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x1.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.divide(x2, context.stream);
 
-            return y;
+            return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !std.meta.Tuple(&.{ *TaggedVar, *TaggedVar }) {
@@ -334,7 +335,7 @@ pub fn MatMul(comptime T: type) type {
         pub fn forward(self: *Self, x1: *const GPUTensor(T), x2: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x1.linearImp(x2, null, context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             return y.move();
         }

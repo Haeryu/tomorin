@@ -291,7 +291,7 @@ pub fn Deconv1DNoBias(comptime T: type) type {
                 d,
                 context.stream,
             );
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             return y.move();
         }
@@ -380,7 +380,7 @@ pub fn Conv1DGradW(comptime T: type) type {
                 &.{ 0, 2 },
                 context.stream,
             );
-            errdefer gw.deinitAsync(context.stream);
+            defer gw.deinitAsync(context.stream);
 
             return gw.move();
         }
@@ -499,7 +499,7 @@ pub fn Conv2DNoBias(comptime T: type) type {
             defer y.deinitAsync(context.stream);
 
             var y_roll = try y.rollaxis(3, 1, context.stream);
-            errdefer y_roll.deinitAsync(context.stream);
+            defer y_roll.deinitAsync(context.stream);
 
             return y_roll.move();
         }
@@ -613,7 +613,7 @@ pub fn Deconv2DNoBias(comptime T: type) type {
             try gcol_flat.reshape(flat_shape);
 
             var y = try gcol_flat.col2im(&img_shape, .{ kh, kw }, .{ sy, sx }, .{ ph, pw }, .{ dy, dx }, context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             return y.move();
         }

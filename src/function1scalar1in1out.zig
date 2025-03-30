@@ -27,6 +27,8 @@ const broadcastToEx = @import("function1slice1in1out.zig").broadcastToEx;
 const logSoftmaxEx = @import("function1slice1in1out.zig").logSoftmaxEx;
 const softmaxEx = @import("function1slice1in1out.zig").softmaxEx;
 
+const dbg = @import("util.zig").debugPrintGpuTensor;
+
 pub fn FuncDecorator1Scalar1in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
@@ -136,7 +138,7 @@ pub fn Shift(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.shift(self.scalar, context.stream);
             return y;
@@ -174,7 +176,7 @@ pub fn Scale(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
             try y.scale(self.scalar, context.stream);
             return y.move();
         }
@@ -211,7 +213,7 @@ pub fn Powf(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
             try y.powf(self.scalar, context.stream);
             return y.move();
         }
@@ -250,7 +252,7 @@ pub fn Pow(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
             try y.pow(self.scalar, context.stream);
             return y;
         }
@@ -314,7 +316,7 @@ pub fn MaxPooling(comptime T: type) type {
                 self.scalar.padding,
                 context.stream,
             );
-            errdefer back.deinitAsync(context.stream);
+            defer back.deinitAsync(context.stream);
 
             return try self.base.chain.createVariable(T, back.move(), null);
         }
@@ -369,7 +371,7 @@ pub fn AveragePooling(comptime T: type) type {
                 self.scalar.padding,
                 context.stream,
             );
-            errdefer back.deinitAsync(context.stream);
+            defer back.deinitAsync(context.stream);
 
             return try self.base.chain.createVariable(T, back.move(), null);
         }
@@ -406,7 +408,7 @@ pub fn MaskedFill(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.maskedFill(&self.scalar.mask.asUntagged(T).data, self.scalar.val, context.stream);
             return y.move();
@@ -462,7 +464,7 @@ pub fn Embed(comptime T: type) type {
         pub fn forward(self: *Self, weight: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var output = try weight.embeddingForward(&self.scalar.asUntagged(usize).data, context.stream);
-            errdefer output.deinitAsync(context.stream);
+            defer output.deinitAsync(context.stream);
             return output.move();
         }
 
@@ -473,7 +475,7 @@ pub fn Embed(comptime T: type) type {
 
             const num_embeddings = self.in.?.getShape()[0];
             var grad_weight = try gy.asUntagged(T).data.embeddingBackward(&self.scalar.asUntagged(usize).data, num_embeddings, stream);
-            errdefer grad_weight.deinitAsync(stream);
+            defer grad_weight.deinitAsync(stream);
 
             // Create a TaggedVar for the gradient
             return try chain.createVariable(T, grad_weight.move(), null);
@@ -538,27 +540,30 @@ pub fn SoftmaxCrossEntropy(comptime T: type) type {
             try prod.product(&one_hot_t, context.stream);
 
             // Handle ignore_index
-            var mask: GPUTensor(T) = undefined;
-            var num_non_ignored: GPUTensor(T) = undefined;
-            if (self.scalar.ignore_index) |ignore_idx| {
-                var mask_uz = try t.data.cloneAsync(context.stream);
-                defer mask_uz.deinitAsync(context.stream);
+            var mask: GPUTensor(T), var num_non_ignored: GPUTensor(T) = blk: {
+                if (self.scalar.ignore_index) |ignore_idx| {
+                    var mask_uz = try t.data.cloneAsync(context.stream);
+                    defer mask_uz.deinitAsync(context.stream);
 
-                try mask_uz.neq(ignore_idx, context.stream);
+                    try mask_uz.neq(ignore_idx, context.stream);
 
-                mask = try mask_uz.cast(T, context.stream);
-                errdefer mask.deinitAsync(context.stream);
+                    var mask = try mask_uz.cast(T, context.stream);
+                    defer mask.deinitAsync(context.stream);
 
-                num_non_ignored = try mask.sum(context.allocator, null, true, context.stream);
-                errdefer num_non_ignored.deinitAsync(context.stream);
-            } else {
-                mask = try .initAsync(&.{batch_size}, context.stream);
-                errdefer mask.deinitAsync(context.stream);
-                try mask.fill(1.0, context.stream);
+                    var num_non_ignored = try mask.sum(context.allocator, null, true, context.stream);
+                    defer num_non_ignored.deinitAsync(context.stream);
 
-                num_non_ignored = try mask.sum(context.allocator, null, true, context.stream);
-                errdefer num_non_ignored.deinitAsync(context.stream);
-            }
+                    break :blk .{ mask.move(), num_non_ignored.move() };
+                } else {
+                    var mask: GPUTensor(T) = try .initAsync(&.{batch_size}, context.stream);
+                    defer mask.deinitAsync(context.stream);
+                    try mask.fill(1.0, context.stream);
+
+                    var num_non_ignored: GPUTensor(T) = try mask.sum(context.allocator, null, true, context.stream);
+                    defer num_non_ignored.deinitAsync(context.stream);
+                    break :blk .{ mask.move(), num_non_ignored.move() };
+                }
+            };
             defer mask.deinitAsync(context.stream);
             defer num_non_ignored.deinitAsync(context.stream);
 
@@ -730,7 +735,7 @@ pub fn GetItemGrad(comptime T: type, comptime n_dims: comptime_int) type {
             const context = self.base.context;
 
             var gx = try GPUTensor(T).initAsync(self.scalar.original_shape, context.stream);
-            errdefer gx.deinitAsync(context.stream);
+            defer gx.deinitAsync(context.stream);
             try gx.fill(0.0, context.stream);
 
             return try gx.getItemGrad(context.allocator, &self.scalar.array, x, context.stream);

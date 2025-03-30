@@ -70,7 +70,14 @@ pub fn DataLoader(comptime Dataset: type) type {
                 return null;
             }
 
-            const batch_is = self.index[self.iteration * self.batch_size .. (self.iteration + 1) * self.batch_size];
+            // if (self.iteration * self.batch_size >= self.index.len or (self.iteration + 1) * self.batch_size >= self.index.len) {
+            //     self.reset();
+            //     return null;
+            // }
+
+            const start = self.iteration * self.batch_size;
+            const end = @min(start + self.batch_size, self.data_size);
+            const batch_is = self.index[start..end];
 
             // TODO: Error handle while looping
             for (0.., batch_is) |i, batch_i| {

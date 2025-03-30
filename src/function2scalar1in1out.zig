@@ -20,6 +20,7 @@ const makefunc1in1outBase = @import("function.zig").makefunc1in1outBase;
 const addEx = @import("function2in1out.zig").addEx;
 const mulEx = @import("function2in1out.zig").mulEx;
 const scaleEx = @import("function1scalar1in1out.zig").scaleEx;
+const dbg = @import("util.zig").debugPrintGpuTensor;
 
 pub fn FuncDecorator2Scalar1in1out(comptime Self: type) type {
     return struct {
@@ -149,10 +150,10 @@ pub fn ScaleShift(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.scaleShift(self.scalar1, self.scalar2, context.stream);
-            return y;
+            return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
@@ -189,11 +190,11 @@ pub fn Clip(comptime T: type) type {
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
             const context = self.base.context;
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.clamp(self.scalar1, self.scalar2, context.stream);
 
-            return y;
+            return y.move();
         }
 
         pub fn backward(self: *Self, gy: *TaggedVar) !*TaggedVar {
@@ -254,23 +255,25 @@ pub fn Dropout(comptime T: type) type {
             const context = self.base.context;
             if (self.scalar2) {
                 var y = try x.cloneAsync(context.stream);
-                errdefer y.deinitAsync(context.stream);
+                defer y.deinitAsync(context.stream);
 
                 if (self.mask == null) {
                     var mask: GPUTensor(T) = try .initAsync(x.base.getShapeConst(), context.stream);
-                    errdefer mask.deinitAsync(context.stream);
+                    defer mask.deinitAsync(context.stream);
 
                     self.mask = try self.base.chain.createVariable(T, mask.move(), null);
                 }
 
                 try self.mask.?.asUntagged(T).data.fillUniform(context.cuda_context, context.stream);
                 try self.mask.?.asUntagged(T).data.gt(self.scalar1, context.stream);
+                // try dbg(BF16, &self.mask.?.asUntagged(T).data, context);
+
                 const scale = 1.0 / (1.0 - self.scalar1);
                 try self.mask.?.asUntagged(T).data.scale(scale, context.stream);
 
                 try y.product(&self.mask.?.asUntagged(T).data, context.stream);
 
-                return y;
+                return y.move();
             } else {
                 return try x.cloneAsync(context.stream);
             }

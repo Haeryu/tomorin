@@ -1159,18 +1159,28 @@ pub fn LayerNorm(comptime T: type) type {
             const axis: isize = @as(isize, @intCast(rank)) - 1;
 
             // Compute mean and variance along the last axis
+
+            // try dbg(BF16, x, self.base.context);
+            // std.time.sleep(1000000);
+
             var mean = try x.mean(allocator, &.{axis}, true, stream);
             defer mean.deinitAsync(stream);
+
+            // try dbg(BF16, &mean, self.base.context);
+            // std.time.sleep(1000000);
 
             var variance = try x.varianceBiased(allocator, &.{axis}, true, stream);
             defer variance.deinitAsync(stream);
 
             // Compute inv_std = 1 / sqrt(variance + eps)
             var inv_std = try variance.cloneAsync(stream);
-            errdefer inv_std.deinitAsync(stream);
+
+            defer inv_std.deinitAsync(stream);
             try inv_std.shift(self.scalar.eps, stream);
             try inv_std.sqrt(stream);
+
             try inv_std.inv(stream);
+            // try dbg(BF16, &inv_std, self.base.context);
 
             // Compute x_centered = x - mean
             var x_centered = try x.cloneAsync(stream);
@@ -1223,7 +1233,7 @@ pub fn LayerNorm(comptime T: type) type {
 
             // Compute inv_std
             var inv_std = try variance.cloneAsync(stream);
-            errdefer inv_std.deinitAsync(stream);
+            defer inv_std.deinitAsync(stream);
             try inv_std.shift(self.scalar.eps, stream);
             try inv_std.sqrt(stream);
             try inv_std.inv(stream);
@@ -1273,7 +1283,7 @@ pub fn LayerNorm(comptime T: type) type {
             try xnorm_mean_gy_gamma_xnorm.product(&mean_gy_gamma_xnorm_broad, stream);
 
             var gx = try gy_gamma.cloneAsync(stream);
-            errdefer gx.deinitAsync(stream);
+            defer gx.deinitAsync(stream);
             try gx.sub(&mean_gy_gamma_broad, stream);
             try gx.sub(&xnorm_mean_gy_gamma_xnorm, stream);
 
@@ -1293,10 +1303,10 @@ pub fn LayerNorm(comptime T: type) type {
             try gy_xnorm.product(&x_norm, stream);
 
             var ggamma = try gy_xnorm.sum(allocator, axes, true, stream);
-            errdefer ggamma.deinitAsync(stream);
+            defer ggamma.deinitAsync(stream);
 
             var gbeta = try gy_tensor.sum(allocator, axes, true, stream);
-            errdefer gbeta.deinitAsync(stream);
+            defer gbeta.deinitAsync(stream);
 
             // Create TaggedVar for gradients
             const gx_v = try self.base.chain.createVariable(T, gx.move(), null);
@@ -1368,6 +1378,8 @@ pub fn RMSNorm(comptime T: type) type {
 
             var mean_x_squared = try x_squared.mean(allocator, &.{axis}, true, stream); // Mean over last dim
             defer mean_x_squared.deinitAsync(stream);
+
+            //  try dbg(BF16, &x.asUntagged(BF16).data, self.context);
 
             var rms = try mean_x_squared.cloneAsync(stream);
             defer rms.deinitAsync(stream);
@@ -1451,7 +1463,7 @@ pub fn RMSNorm(comptime T: type) type {
             try xnorm_mean_gy_gamma_xnorm.product(&mean_gy_gamma_xnorm_broad, stream);
 
             var gx = try gy_gamma.cloneAsync(stream);
-            errdefer gx.deinitAsync(stream);
+            defer gx.deinitAsync(stream);
             try gx.sub(&xnorm_mean_gy_gamma_xnorm, stream);
             var inv_rms_broad2 = try inv_rms.broadcastTo(gx.base.getShapeConst(), stream);
             defer inv_rms_broad2.deinitAsync(stream);
@@ -1467,10 +1479,10 @@ pub fn RMSNorm(comptime T: type) type {
             try gy_xnorm.product(&x_norm, stream);
 
             var ggamma = try gy_xnorm.sum(allocator, axes, true, stream);
-            errdefer ggamma.deinitAsync(stream);
+            defer ggamma.deinitAsync(stream);
 
             var gbeta = try gy_tensor.sum(allocator, axes, true, stream);
-            errdefer gbeta.deinitAsync(stream);
+            defer gbeta.deinitAsync(stream);
 
             // Wrap gradients in TaggedVar
             const gx_v = try self.base.chain.createVariable(T, gx.move(), null);

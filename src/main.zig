@@ -44,7 +44,7 @@ fn factorial(x: f64) f64 {
 
 fn taylorSin(comptime T: type, x: *TaggedVar, threshold: f32) !*TaggedVar {
     var y_ten = try tomo.tensor.GPUTensor(T).initAsync(x.asUntaggedConst(T).data.base.getShapeConst(), x.getContextConst().stream);
-    errdefer y_ten.deinitAsync(x.getContextConst().stream);
+    defer y_ten.deinitAsync(x.getContextConst().stream);
     try y_ten.fill(0.0, x.getContextConst().stream);
 
     var y = try x.getContext().createVariable(T, y_ten.move(), null);
@@ -90,7 +90,7 @@ fn example() !void {
     defer context.deinit();
 
     var v1 = try tomo.tensor.GPUTensor(F).initAsync(&.{1}, &stream);
-    errdefer v1.deinitAsync(&stream);
+    defer v1.deinitAsync(&stream);
     try v1.fill(std.math.pi / 4.0, &stream);
 
     var x = try context.createVariable(F, v1.move(), "x");
@@ -144,19 +144,19 @@ fn example2() !void {
     defer context.deinit();
 
     var xv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
-    errdefer xv.deinitAsync(&stream);
+    defer xv.deinitAsync(&stream);
     try xv.fillUniform(&cuda_context, &stream);
 
     var noisev = try tomo.tensor.GPUTensor(F).initAsync(&.{ 100, 1 }, &stream);
-    errdefer noisev.deinitAsync(&stream);
+    defer noisev.deinitAsync(&stream);
     try noisev.fillUniform(&cuda_context, &stream);
 
     var wv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, 1 }, &stream);
-    errdefer wv.deinitAsync(&stream);
+    defer wv.deinitAsync(&stream);
     try wv.fill(0.0, &stream);
 
     var bv = try tomo.tensor.GPUTensor(F).initAsync(&.{ 1, 1 }, &stream);
-    errdefer bv.deinitAsync(&stream);
+    defer bv.deinitAsync(&stream);
     try bv.fill(0.0, &stream);
 
     const x = try context.createVariable(F, xv.move(), "x");

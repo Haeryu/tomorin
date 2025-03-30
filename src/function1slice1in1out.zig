@@ -24,6 +24,8 @@ const mulEx = @import("function2in1out.zig").mulEx;
 const subEx = @import("function2in1out.zig").subEx;
 const getItemGradEx = @import("function1scalar1in1out.zig").getItemGradEx;
 
+const dbg = @import("util.zig").debugPrintGpuTensor;
+
 pub fn FuncDecorator1Slice1in1out(comptime Self: type) type {
     return struct {
         const Base = FuncDecorator1in1outBase(Self);
@@ -124,7 +126,7 @@ pub fn Reshape(comptime T: type) type {
             self.old_shape = x.base.getShapeConst();
 
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.reshape(self.slice);
 
@@ -165,7 +167,7 @@ pub fn BroadCastTo(comptime T: type) type {
             self.x_shape = x.base.getShapeConst();
 
             var y = try x.broadcastTo(self.slice, context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             return y.move();
         }
@@ -208,9 +210,10 @@ pub fn Softmax(comptime T: type) type {
             defer max_brod.deinitAsync(context.stream);
 
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
 
             try y.sub(&max_brod, context.stream);
+
             try y.exp(context.stream);
 
             var y_sum = try y.sum(context.allocator, self.slice, true, context.stream);
@@ -261,6 +264,9 @@ pub fn LogSoftmax(comptime T: type) type {
         const Self = LogSoftmax(T);
 
         pub fn forward(self: *Self, x: *const GPUTensor(T)) !GPUTensor(T) {
+            // try dbg(BF16, x, self.base.context);
+            // std.time.sleep(5 * std.time.ns_per_s);
+
             const context = self.base.context;
 
             var max = try x.max(context.allocator, self.slice, true, context.stream);
@@ -269,7 +275,8 @@ pub fn LogSoftmax(comptime T: type) type {
             defer max_brod.deinitAsync(context.stream);
 
             var y = try x.cloneAsync(context.stream);
-            errdefer y.deinitAsync(context.stream);
+            defer y.deinitAsync(context.stream);
+
             try y.sub(&max_brod, context.stream);
 
             var exp_val = try y.cloneAsync(context.stream);
