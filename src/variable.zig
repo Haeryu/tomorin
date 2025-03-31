@@ -557,4 +557,20 @@ pub const TaggedVar = union(enum) {
             },
         }
     }
+
+    pub fn writeFromHost(
+        self: *TaggedVar,
+        comptime T: type,
+        data: []const T,
+        offset: usize,
+    ) !void {
+        switch (T) {
+            BF16 => try self.asUntagged(T).data.writeFromHostAsync(data, offset, self.asUntagged(T).context.stream),
+            f16 => try self.asUntagged(T).data.writeFromHostAsync(data, offset, self.asUntagged(T).context.stream),
+            f32 => try self.asUntagged(T).data.writeFromHostAsync(data, offset, self.asUntagged(T).context.stream),
+            f64 => try self.asUntagged(T).data.writeFromHostAsync(data, offset, self.asUntagged(T).context.stream),
+            usize => try self.asUntagged(T).data.writeFromHostAsync(data, offset, self.asUntagged(T).context.stream),
+            else => unreachable,
+        }
+    }
 };
