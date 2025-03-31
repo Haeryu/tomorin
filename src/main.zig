@@ -236,8 +236,6 @@ fn predict2(
     return y2;
 }
 
-// TODO : protect -> not bool, out from context. protext from context?
-// TODO: detatch memory stack deletion from context(allow themselves destroy temselves)
 fn example3() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -1317,7 +1315,7 @@ fn example12() !void {
 
             const loss = try softmaxCrossEntropyEx(F, y, .{ .t = t }, iter_chain);
 
-            const acc = try tomorin.util.accuracy(F, y, t);
+            const acc = try tomorin.util.accuracy(F, y, t, 1);
 
             x.clearGrad();
             t.clearGrad();
@@ -1365,6 +1363,6 @@ fn example12() !void {
 pub fn main() !void {
     // try example4();
     // try example9();
-    // try example12();
-    try function.testFunctions();
+    try example12();
+    // try function.testFunctions();
 }
